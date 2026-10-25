@@ -20,6 +20,7 @@ def generate_candidate_id():
 
 
 class MessageStatus(models.TextChoices):
+    DELIVERED = 'delivered', 'Delivered'
     READ = 'read', 'Read'
     SENT = 'sent', 'Sent'
     FAILED = 'failed', 'Failed'

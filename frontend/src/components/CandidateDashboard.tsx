@@ -12,10 +12,12 @@ import {
   Typography,
   Divider,
   Tooltip,
+  Badge,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
 import SendIcon from '@mui/icons-material/Send';
+import GroupIcon from '@mui/icons-material/Group';
 import SearchIcon from '@mui/icons-material/Search';
 
 import { candidatesApi } from '@/lib/api';
@@ -24,6 +26,8 @@ import { useToast } from '@/context/ToastContext';
 import { CandidateTable } from '@/components/CandidateTable';
 import { AddCandidateModal } from '@/components/AddCandidateModal';
 import { SendMessageModal } from '@/components/SendMessageModal';
+import { BulkMessageModal } from '@/components/BulkMessageModal';
+import { CandidateDetailModal } from '@/components/CandidateDetailModal';
 import { DeleteConfirmDialog } from '@/components/DeleteConfirmDialog';
 
 type SortField = 'full_name' | 'mobile_number' | 'last_message_date' | 'status' | 'candidate_id';
@@ -55,8 +59,10 @@ export default function CandidateDashboard() {
   // Modal state
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [sendModalOpen, setSendModalOpen] = useState(false);
+  const [bulkModalOpen, setBulkModalOpen] = useState(false);
+  const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [sendTarget, setSendTarget] = useState<Candidate | null>(null);
+  const [activeCandidate, setActiveCandidate] = useState<Candidate | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
 
   // Fetch candidates
@@ -90,7 +96,7 @@ export default function CandidateDashboard() {
     return () => clearTimeout(timer);
   }, [searchInput]);
 
-  // Sort candidates client-side (for demo; in production, pass to API)
+  // Sort candidates client-side
   const sortedCandidates = [...candidates].sort((a, b) => {
     const aVal = a[sortField] ?? '';
     const bVal = b[sortField] ?? '';
@@ -133,19 +139,31 @@ export default function CandidateDashboard() {
     }
   };
 
-  // Send message
+  // Send message to single or multiple
   const handleSendClick = () => {
     if (selected.length === 0) {
-      showToast('Select a candidate to send a message.', 'warning');
+      showToast('Select at least one candidate to send a message.', 'warning');
       return;
     }
-    if (selected.length > 1) {
-      showToast('Select only one candidate for sending a message.', 'warning');
-      return;
+
+    if (selected.length === 1) {
+      const target = candidates.find(c => c.id === selected[0]) ?? null;
+      setActiveCandidate(target);
+      setSendModalOpen(true);
+    } else {
+      // Bulk messaging flow
+      setBulkModalOpen(true);
     }
-    const target = candidates.find(c => c.id === selected[0]) ?? null;
-    setSendTarget(target);
+  };
+
+  const handleOpenSingleSend = (candidate: Candidate) => {
+    setActiveCandidate(candidate);
     setSendModalOpen(true);
+  };
+
+  const handleOpenDetail = (candidate: Candidate) => {
+    setActiveCandidate(candidate);
+    setDetailModalOpen(true);
   };
 
   // Sort
@@ -169,6 +187,8 @@ export default function CandidateDashboard() {
     setPage(0);
     setSelected([]);
   };
+
+  const selectedCandidatesList = candidates.filter(c => selected.includes(c.id));
 
   return (
     <Box sx={{ minHeight: '100vh', backgroundColor: '#f8f9fa' }}>
@@ -250,28 +270,44 @@ export default function CandidateDashboard() {
               </span>
             </Tooltip>
 
-            <Tooltip title={selected.length === 0 ? 'Select a candidate first' : 'Send message'}>
+            <Tooltip
+              title={
+                selected.length === 0
+                  ? 'Select one or more candidates'
+                  : selected.length === 1
+                  ? 'Send message to 1 candidate'
+                  : `Bulk send to ${selected.length} candidates`
+              }
+            >
               <span>
                 <Button
                   id="send-message-btn"
-                  variant="outlined"
+                  variant={selected.length > 1 ? 'contained' : 'outlined'}
                   size="small"
-                  startIcon={<SendIcon sx={{ fontSize: '0.9rem' }} />}
+                  startIcon={selected.length > 1 ? <GroupIcon sx={{ fontSize: '1rem' }} /> : <SendIcon sx={{ fontSize: '0.9rem' }} />}
                   onClick={handleSendClick}
                   disabled={selected.length === 0}
                   sx={{
-                    borderColor: '#9e9e9e',
-                    color: '#616161',
-                    fontWeight: 500,
+                    fontWeight: 600,
                     fontSize: '0.8rem',
                     textTransform: 'uppercase',
                     px: 1.5,
                     py: 0.6,
-                    '&:hover': { backgroundColor: '#e8f5e9', borderColor: '#43a047', color: '#43a047' },
+                    ...(selected.length > 1
+                      ? {
+                          backgroundColor: '#1976d2',
+                          color: '#fff',
+                          '&:hover': { backgroundColor: '#1565c0' },
+                        }
+                      : {
+                          borderColor: '#9e9e9e',
+                          color: '#616161',
+                          '&:hover': { backgroundColor: '#e8f5e9', borderColor: '#43a047', color: '#43a047' },
+                        }),
                     '&.Mui-disabled': { opacity: 0.5 },
                   }}
                 >
-                  Send Message
+                  {selected.length > 1 ? `Send to ${selected.length} Candidates` : 'Send Message'}
                 </Button>
               </span>
             </Tooltip>
@@ -280,7 +316,7 @@ export default function CandidateDashboard() {
             <TextField
               id="candidate-search"
               size="small"
-              placeholder="Search"
+              placeholder="Search by name, phone, email, ID"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               InputProps={{
@@ -291,7 +327,7 @@ export default function CandidateDashboard() {
                 ),
               }}
               sx={{
-                width: 200,
+                width: 240,
                 '& .MuiOutlinedInput-root': {
                   borderRadius: '6px',
                   backgroundColor: '#fafafa',
@@ -312,10 +348,8 @@ export default function CandidateDashboard() {
           selected={selected}
           onSelect={handleSelect}
           onSelectAll={handleSelectAll}
-          onCandidateClick={(c) => {
-            setSendTarget(c);
-            setSendModalOpen(true);
-          }}
+          onCandidateClick={handleOpenDetail}
+          onSendMessageClick={handleOpenSingleSend}
           sortField={sortField}
           sortOrder={sortOrder}
           onSort={handleSort}
@@ -361,7 +395,24 @@ export default function CandidateDashboard() {
           setSendModalOpen(false);
           setSelected([]);
         }}
-        candidate={sendTarget}
+        candidate={activeCandidate}
+      />
+
+      <BulkMessageModal
+        open={bulkModalOpen}
+        onClose={() => setBulkModalOpen(false)}
+        onSuccess={() => {
+          fetchCandidates();
+          setSelected([]);
+        }}
+        selectedCandidates={selectedCandidatesList}
+      />
+
+      <CandidateDetailModal
+        open={detailModalOpen}
+        onClose={() => setDetailModalOpen(false)}
+        candidate={activeCandidate}
+        onSendMessage={handleOpenSingleSend}
       />
 
       <DeleteConfirmDialog

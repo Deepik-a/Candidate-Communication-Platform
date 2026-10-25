@@ -18,6 +18,7 @@ import {
   MenuItem,
   SelectChangeEvent,
   Box,
+  Alert,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import SendIcon from '@mui/icons-material/Send';
@@ -42,7 +43,7 @@ export function SendMessageModal({ open, onClose, onSuccess, candidate }: SendMe
   const { showToast } = useToast();
   const [loading, setLoading] = useState(false);
   const [channel, setChannel] = useState<MessageChannel>('sms');
-  const [content, setContent] = useState('');
+  const [content, setContent] = useState('Your interview is scheduled for tomorrow.');
   const [contentError, setContentError] = useState('');
 
   const handleChannelChange = (e: SelectChangeEvent) => {
@@ -50,8 +51,7 @@ export function SendMessageModal({ open, onClose, onSuccess, candidate }: SendMe
   };
 
   const handleClose = () => {
-    setChannel('sms');
-    setContent('');
+    setContent('Your interview is scheduled for tomorrow.');
     setContentError('');
     onClose();
   };
@@ -65,12 +65,23 @@ export function SendMessageModal({ open, onClose, onSuccess, candidate }: SendMe
 
     setLoading(true);
     try {
-      await communicationsApi.send({
+      const outcome = await communicationsApi.send({
         candidate_id: candidate.id,
         channel,
         content: content.trim(),
       });
-      showToast(`Message sent to ${candidate.full_name} via ${channel.toUpperCase()}!`, 'success');
+
+      if (outcome.success) {
+        showToast(
+          `Message dispatched to ${candidate.full_name} via ${channel.toUpperCase()}! Status: ${outcome.status.toUpperCase()}`,
+          'success'
+        );
+      } else {
+        showToast(
+          `Message delivery to ${candidate.full_name} failed: ${outcome.error_message || 'Provider error'}`,
+          'error'
+        );
+      }
       handleClose();
       onSuccess();
     } catch {
@@ -96,19 +107,31 @@ export function SendMessageModal({ open, onClose, onSuccess, candidate }: SendMe
       <DialogContent dividers>
         <Stack spacing={2.5} sx={{ pt: 1 }}>
           {candidate && (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Typography variant="body2" color="text.secondary">To:</Typography>
-              <Typography variant="body2" sx={{ fontWeight: 600 }}>{candidate.full_name}</Typography>
-              <Typography variant="body2" color="text.secondary">({candidate.mobile_number})</Typography>
+            <Box sx={{ p: 1.5, backgroundColor: '#f8fafc', borderRadius: 1.5, border: '1px solid #e2e8f0' }}>
+              <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', fontWeight: 600 }}>
+                Recipient
+              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700, color: '#1e293b' }}>
+                  {candidate.full_name}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  ({channel === 'email' && candidate.email ? candidate.email : candidate.mobile_number})
+                </Typography>
+                <Typography variant="caption" sx={{ ml: 'auto', color: '#64748b', fontWeight: 600 }}>
+                  ID: {candidate.candidate_id}
+                </Typography>
+              </Box>
             </Box>
           )}
+
           <FormControl fullWidth size="small">
-            <InputLabel id="channel-label">Channel</InputLabel>
+            <InputLabel id="channel-label">Communication Provider / Channel</InputLabel>
             <Select
               labelId="channel-label"
               id="send-message-channel"
               value={channel}
-              label="Channel"
+              label="Communication Provider / Channel"
               onChange={handleChannelChange}
             >
               {channelOptions.map(opt => (
@@ -116,9 +139,10 @@ export function SendMessageModal({ open, onClose, onSuccess, candidate }: SendMe
               ))}
             </Select>
           </FormControl>
+
           <TextField
             id="send-message-content"
-            label="Message"
+            label="Message Content"
             value={content}
             onChange={(e) => {
               setContent(e.target.value);
@@ -127,12 +151,16 @@ export function SendMessageModal({ open, onClose, onSuccess, candidate }: SendMe
             error={!!contentError}
             helperText={contentError || `${content.length}/2000 characters`}
             multiline
-            rows={5}
+            rows={4}
             fullWidth
             size="small"
-            placeholder="Type your message here..."
+            placeholder="Type message to candidate..."
             inputProps={{ maxLength: 2000 }}
           />
+
+          <Alert severity="info" sx={{ fontSize: '0.8rem', py: 0.5 }}>
+            Messages are tracked via gateway with real-time status updates (Sent, Delivered, Read, Failed).
+          </Alert>
         </Stack>
       </DialogContent>
       <DialogActions sx={{ px: 3, py: 2 }}>
@@ -145,6 +173,10 @@ export function SendMessageModal({ open, onClose, onSuccess, candidate }: SendMe
           variant="contained"
           disabled={loading}
           startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <SendIcon />}
+          sx={{
+            backgroundColor: '#1976d2',
+            '&:hover': { backgroundColor: '#1565c0' },
+          }}
         >
           {loading ? 'Sending...' : 'Send Message'}
         </Button>

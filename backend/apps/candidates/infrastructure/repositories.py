@@ -47,6 +47,7 @@ class DjangoCandidateRepository(CandidateRepositoryInterface):
             qs = qs.filter(
                 Q(full_name__icontains=search) |
                 Q(mobile_number__icontains=search) |
+                Q(email__icontains=search) |
                 Q(candidate_id__icontains=search)
             )
         total = qs.count()

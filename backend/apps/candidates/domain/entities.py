@@ -10,6 +10,7 @@ from enum import Enum
 
 
 class MessageStatus(str, Enum):
+    DELIVERED = "delivered"
     READ = "read"
     SENT = "sent"
     FAILED = "failed"
