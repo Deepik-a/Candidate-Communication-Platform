@@ -53,6 +53,7 @@ class SendMessageView(APIView):
             candidate_id=serializer.validated_data['candidate_id'],
             channel=serializer.validated_data['channel'],
             content=serializer.validated_data['content'],
+            provider_name=serializer.validated_data.get('provider') or None,
         )
 
         resp_status = status.HTTP_201_CREATED if outcome.success else status.HTTP_200_OK
@@ -82,6 +83,7 @@ class BulkSendMessageView(APIView):
             candidate_ids=serializer.validated_data['candidate_ids'],
             channel=serializer.validated_data['channel'],
             content=serializer.validated_data['content'],
+            provider_name=serializer.validated_data.get('provider') or None,
         )
 
         return Response(BulkMessageResponseSerializer(bulk_result).data, status=status.HTTP_200_OK)
@@ -140,3 +142,26 @@ class MessageDetailStatusView(APIView):
             return Response({'detail': 'Message not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         return Response(MessageSerializer(updated_message).data)
+
+    @extend_schema(
+        responses={200: MessageSerializer},
+        summary='Sync latest status directly from external provider',
+    )
+    def post(self, request, message_id):
+        """Syncs the latest status from the external communication provider."""
+        try:
+            message = Message.objects.get(id=message_id)
+        except Message.DoesNotExist:
+            return Response({'detail': 'Message not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if message.provider_message_id:
+            from .providers import ProviderFactory
+            provider_type = "whatsapp" if "wamid" in message.provider_message_id else "dummy"
+            provider = ProviderFactory.get_provider(channel=message.channel, provider_name=provider_type)
+            latest_status = provider.check_status(message.provider_message_id)
+
+            service = get_communication_service()
+            message = service.update_message_status(message.id, latest_status.value)
+
+        return Response(MessageSerializer(message).data)
+

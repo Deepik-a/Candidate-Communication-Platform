@@ -22,6 +22,7 @@ import {
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import SendIcon from '@mui/icons-material/Send';
+import HubIcon from '@mui/icons-material/Hub';
 import { communicationsApi } from '@/lib/api';
 import { useToast } from '@/context/ToastContext';
 import { Candidate, MessageChannel } from '@/types';
@@ -39,15 +40,37 @@ const channelOptions: { value: MessageChannel; label: string }[] = [
   { value: 'email', label: 'Email' },
 ];
 
+const providerOptions: { value: string; label: string; description: string }[] = [
+  {
+    value: 'dummy',
+    label: 'Dummy Communication Service (Port 9000)',
+    description: 'Independent external service with reference IDs, status updates & simulation',
+  },
+  {
+    value: 'whatsapp',
+    label: 'Real WhatsApp API / Sandbox',
+    description: 'Meta Graph API / WhatsApp Developer Sandbox (wamid.HB...)',
+  },
+];
+
 export function SendMessageModal({ open, onClose, onSuccess, candidate }: SendMessageModalProps) {
   const { showToast } = useToast();
   const [loading, setLoading] = useState(false);
   const [channel, setChannel] = useState<MessageChannel>('sms');
+  const [provider, setProvider] = useState<string>('dummy');
   const [content, setContent] = useState('Your interview is scheduled for tomorrow.');
   const [contentError, setContentError] = useState('');
 
   const handleChannelChange = (e: SelectChangeEvent) => {
-    setChannel(e.target.value as MessageChannel);
+    const newChannel = e.target.value as MessageChannel;
+    setChannel(newChannel);
+    if (newChannel === 'whatsapp') {
+      setProvider('whatsapp');
+    }
+  };
+
+  const handleProviderChange = (e: SelectChangeEvent) => {
+    setProvider(e.target.value);
   };
 
   const handleClose = () => {
@@ -69,16 +92,17 @@ export function SendMessageModal({ open, onClose, onSuccess, candidate }: SendMe
         candidate_id: candidate.id,
         channel,
         content: content.trim(),
+        provider,
       });
 
       if (outcome.success) {
         showToast(
-          `Message dispatched to ${candidate.full_name} via ${channel.toUpperCase()}! Status: ${outcome.status.toUpperCase()}`,
+          `Dispatched via ${outcome.provider}! Status: ${outcome.status.toUpperCase()} [ID: ${outcome.provider_message_id}]`,
           'success'
         );
       } else {
         showToast(
-          `Message delivery to ${candidate.full_name} failed: ${outcome.error_message || 'Provider error'}`,
+          `Delivery failed: ${outcome.error_message || 'Provider error'}`,
           'error'
         );
       }
@@ -125,13 +149,35 @@ export function SendMessageModal({ open, onClose, onSuccess, candidate }: SendMe
             </Box>
           )}
 
+          {/* Provider Selection */}
           <FormControl fullWidth size="small">
-            <InputLabel id="channel-label">Communication Provider / Channel</InputLabel>
+            <InputLabel id="provider-select-label">Communication Provider</InputLabel>
+            <Select
+              labelId="provider-select-label"
+              id="send-message-provider"
+              value={provider}
+              label="Communication Provider"
+              onChange={handleProviderChange}
+            >
+              {providerOptions.map(p => (
+                <MenuItem key={p.value} value={p.value}>
+                  <Box>
+                    <Typography variant="body2" fontWeight={600}>{p.label}</Typography>
+                    <Typography variant="caption" color="text.secondary">{p.description}</Typography>
+                  </Box>
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          {/* Channel Selection */}
+          <FormControl fullWidth size="small">
+            <InputLabel id="channel-label">Channel</InputLabel>
             <Select
               labelId="channel-label"
               id="send-message-channel"
               value={channel}
-              label="Communication Provider / Channel"
+              label="Channel"
               onChange={handleChannelChange}
             >
               {channelOptions.map(opt => (
@@ -149,7 +195,10 @@ export function SendMessageModal({ open, onClose, onSuccess, candidate }: SendMe
               if (contentError) setContentError('');
             }}
             error={!!contentError}
-            helperText={contentError || `${content.length}/2000 characters`}
+            helperText={
+              contentError ||
+              `${content.length}/2000 characters. Tip: Add [fail] to test failure, [temp_fail] to test 503 outage.`
+            }
             multiline
             rows={4}
             fullWidth
@@ -159,7 +208,9 @@ export function SendMessageModal({ open, onClose, onSuccess, candidate }: SendMe
           />
 
           <Alert severity="info" sx={{ fontSize: '0.8rem', py: 0.5 }}>
-            Messages are tracked via gateway with real-time status updates (Sent, Delivered, Read, Failed).
+            {provider === 'whatsapp'
+              ? 'Using Real WhatsApp API / Sandbox with authentic wamid message IDs.'
+              : 'Using Dummy Independent Communication Service on port 9000 with live status tracking.'}
           </Alert>
         </Stack>
       </DialogContent>

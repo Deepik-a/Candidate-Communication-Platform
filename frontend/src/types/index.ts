@@ -43,12 +43,14 @@ export interface SendMessagePayload {
   candidate_id: number;
   channel: MessageChannel;
   content: string;
+  provider?: string;
 }
 
 export interface BulkSendMessagePayload {
   candidate_ids: number[];
   channel: MessageChannel;
   content: string;
+  provider?: string;
 }
 
 export interface CandidateMessageOutcome {

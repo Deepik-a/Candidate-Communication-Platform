@@ -3,11 +3,17 @@ Tests for Candidate Management and Communication flows.
 Verifying SOLID principles & Clean Architecture behaviors.
 """
 
+from unittest.mock import patch, MagicMock
 from django.test import TestCase
 from apps.candidates.infrastructure.models import Candidate, MessageStatus
 from apps.communications.models import Message, MessageStatusLog
 from apps.communications.services import CommunicationService
 from apps.communications.domain import CommunicationProvider, ProviderMessageResult, DeliveryStatus
+from apps.communications.providers import (
+    DummyServiceCommunicationProvider,
+    WhatsAppCloudCommunicationProvider,
+    ProviderFactory,
+)
 
 
 class StubFailProvider(CommunicationProvider):
@@ -107,3 +113,43 @@ class CandidateCommunicationTests(TestCase):
         self.assertEqual(self.c1.status, MessageStatus.DELIVERED)
         self.c3.refresh_from_db()
         self.assertEqual(self.c3.status, MessageStatus.FAILED)
+
+    def test_dummy_provider_integration(self):
+        """Requirement #6: Dummy independent communication provider."""
+        provider = DummyServiceCommunicationProvider(base_url="http://localhost:9000")
+        
+        # Test success against running dummy service
+        res = provider.send(self.c1.mobile_number, "Test interview notification", "sms")
+        self.assertTrue(res.success)
+        self.assertTrue(res.provider_message_id.startswith("dummy_sms_"))
+        self.assertIn(res.status, [DeliveryStatus.SENT, DeliveryStatus.DELIVERED])
+
+        # Test simulated failure
+        fail_res = provider.send(self.c1.mobile_number, "Test [fail]", "sms")
+        self.assertFalse(fail_res.success)
+        self.assertEqual(fail_res.status, DeliveryStatus.FAILED)
+        self.assertIsNotNone(fail_res.error_message)
+
+    def test_whatsapp_cloud_provider_integration(self):
+        """Requirement #6: Real WhatsApp API / WhatsApp Sandbox provider."""
+        provider = WhatsAppCloudCommunicationProvider()
+        
+        # Test WhatsApp sandbox delivery
+        res = provider.send(self.c1.mobile_number, "Welcome to the recruitment process", "whatsapp")
+        self.assertTrue(res.success)
+        self.assertTrue(res.provider_message_id.startswith("wamid.HB"))
+        self.assertIn(res.status, [DeliveryStatus.SENT, DeliveryStatus.DELIVERED, DeliveryStatus.READ])
+
+        # Test WhatsApp sandbox simulated failure
+        fail_res = provider.send("0000000000", "Welcome [fail]", "whatsapp")
+        self.assertFalse(fail_res.success)
+        self.assertEqual(fail_res.status, DeliveryStatus.FAILED)
+        self.assertIn("Sandbox rejection", fail_res.error_message)
+
+    def test_provider_factory_resolution(self):
+        """Test provider factory can resolve both dummy and whatsapp providers."""
+        dummy_p = ProviderFactory.get_provider(channel="sms", provider_name="dummy")
+        self.assertIsInstance(dummy_p, DummyServiceCommunicationProvider)
+
+        wa_p = ProviderFactory.get_provider(channel="whatsapp", provider_name="whatsapp")
+        self.assertIsInstance(wa_p, WhatsAppCloudCommunicationProvider)

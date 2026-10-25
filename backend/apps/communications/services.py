@@ -48,16 +48,19 @@ class CommunicationService:
     def __init__(self, provider: Optional[CommunicationProvider] = None):
         self._provider = provider
 
-    def _resolve_provider(self, channel: str) -> CommunicationProvider:
+    def _resolve_provider(self, channel: str, provider_name: Optional[str] = None) -> CommunicationProvider:
         if self._provider is not None:
             return self._provider
-        return ProviderFactory.get_provider(channel=channel, provider_name="gateway")
+        # If channel is whatsapp and no explicit provider is given, WhatsApp Cloud API can be used directly,
+        # or provider_name ('dummy' or 'whatsapp' or 'mock') can be passed
+        return ProviderFactory.get_provider(channel=channel, provider_name=provider_name)
 
     def send_single_message(
         self,
         candidate_id: int,
         channel: str,
         content: str,
+        provider_name: Optional[str] = None,
         forced_status: Optional[str] = None,
     ) -> CandidateMessageOutcome:
         """
@@ -79,7 +82,7 @@ class CommunicationService:
                 error_message=f"Candidate with id {candidate_id} does not exist.",
             )
 
-        provider = self._resolve_provider(channel)
+        provider = self._resolve_provider(channel, provider_name=provider_name)
         recipient = candidate.email if channel == 'email' and candidate.email else candidate.mobile_number
 
         # Dispatch via provider
@@ -132,6 +135,7 @@ class CommunicationService:
         candidate_ids: List[int],
         channel: str,
         content: str,
+        provider_name: Optional[str] = None,
     ) -> BulkMessageResult:
         """
         Sends the same message to multiple candidates.
@@ -150,6 +154,7 @@ class CommunicationService:
                     candidate_id=cid,
                     channel=channel,
                     content=content,
+                    provider_name=provider_name,
                 )
                 outcomes.append(outcome)
                 if outcome.success:

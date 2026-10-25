@@ -31,6 +31,7 @@ class SendMessageSerializer(serializers.Serializer):
     candidate_id = serializers.IntegerField()
     channel = serializers.ChoiceField(choices=MessageChannel.values, default=MessageChannel.SMS)
     content = serializers.CharField(min_length=1, max_length=2000)
+    provider = serializers.CharField(required=False, allow_blank=True, default='')
 
 
 class BulkSendMessageSerializer(serializers.Serializer):
@@ -40,6 +41,7 @@ class BulkSendMessageSerializer(serializers.Serializer):
     )
     channel = serializers.ChoiceField(choices=MessageChannel.values, default=MessageChannel.SMS)
     content = serializers.CharField(min_length=1, max_length=2000)
+    provider = serializers.CharField(required=False, allow_blank=True, default='')
 
 
 class CandidateMessageOutcomeSerializer(serializers.Serializer):

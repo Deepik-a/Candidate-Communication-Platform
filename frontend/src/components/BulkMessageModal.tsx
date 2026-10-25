@@ -54,6 +54,19 @@ const channelOptions: { value: MessageChannel; label: string }[] = [
   { value: 'email', label: 'Email' },
 ];
 
+const providerOptions: { value: string; label: string; description: string }[] = [
+  {
+    value: 'dummy',
+    label: 'Dummy Communication Service (Port 9000)',
+    description: 'Independent service with reference IDs & status updates',
+  },
+  {
+    value: 'whatsapp',
+    label: 'Real WhatsApp API / Sandbox',
+    description: 'Meta Graph API / WhatsApp Developer Sandbox',
+  },
+];
+
 export function BulkMessageModal({
   open,
   onClose,
@@ -63,6 +76,7 @@ export function BulkMessageModal({
   const { showToast } = useToast();
   const [loading, setLoading] = useState(false);
   const [channel, setChannel] = useState<MessageChannel>('sms');
+  const [provider, setProvider] = useState<string>('dummy');
   const [content, setContent] = useState('Your interview is scheduled for tomorrow.');
   const [contentError, setContentError] = useState('');
   
@@ -83,7 +97,15 @@ export function BulkMessageModal({
   }, [open, selectedCandidates]);
 
   const handleChannelChange = (e: SelectChangeEvent) => {
-    setChannel(e.target.value as MessageChannel);
+    const newChannel = e.target.value as MessageChannel;
+    setChannel(newChannel);
+    if (newChannel === 'whatsapp') {
+      setProvider('whatsapp');
+    }
+  };
+
+  const handleProviderChange = (e: SelectChangeEvent) => {
+    setProvider(e.target.value);
   };
 
   const toggleCandidate = (id: number) => {
@@ -113,18 +135,19 @@ export function BulkMessageModal({
         candidate_ids: activeCandidateIds,
         channel,
         content: content.trim(),
+        provider,
       });
 
       setOutcomes(resp.outcomes);
 
       if (resp.failed_count === 0) {
         showToast(
-          `Successfully sent message to all ${resp.successful_count} candidate(s)!`,
+          `Successfully dispatched to all ${resp.successful_count} candidate(s) via ${provider.toUpperCase()}!`,
           'success'
         );
       } else if (resp.successful_count > 0) {
         showToast(
-          `Sent to ${resp.successful_count} candidate(s), ${resp.failed_count} failed. Check individual statuses.`,
+          `Sent to ${resp.successful_count} candidate(s), ${resp.failed_count} failed independently. Check individual statuses.`,
           'warning'
         );
       } else {
@@ -204,14 +227,35 @@ export function BulkMessageModal({
             </Paper>
           </Box>
 
+          {/* Provider Selector */}
+          <FormControl fullWidth size="small">
+            <InputLabel id="bulk-provider-label">Communication Provider</InputLabel>
+            <Select
+              labelId="bulk-provider-label"
+              id="bulk-message-provider"
+              value={provider}
+              label="Communication Provider"
+              onChange={handleProviderChange}
+            >
+              {providerOptions.map(p => (
+                <MenuItem key={p.value} value={p.value}>
+                  <Box>
+                    <Typography variant="body2" fontWeight={600}>{p.label}</Typography>
+                    <Typography variant="caption" color="text.secondary">{p.description}</Typography>
+                  </Box>
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
           {/* Channel Selector */}
           <FormControl fullWidth size="small">
-            <InputLabel id="bulk-channel-label">Communication Provider / Channel</InputLabel>
+            <InputLabel id="bulk-channel-label">Channel</InputLabel>
             <Select
               labelId="bulk-channel-label"
               id="bulk-message-channel"
               value={channel}
-              label="Communication Provider / Channel"
+              label="Channel"
               onChange={handleChannelChange}
             >
               {channelOptions.map(opt => (
@@ -230,7 +274,10 @@ export function BulkMessageModal({
               if (contentError) setContentError('');
             }}
             error={!!contentError}
-            helperText={contentError || `${content.length}/2000 characters`}
+            helperText={
+              contentError ||
+              `${content.length}/2000 characters. Each candidate is tracked independently with its own delivery reference ID.`
+            }
             multiline
             rows={4}
             fullWidth
@@ -246,7 +293,7 @@ export function BulkMessageModal({
               <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
                 <span>Individual Candidate Results</span>
                 <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 500 }}>
-                  (Each message is tracked independently)
+                  (Each message tracked independently)
                 </Typography>
               </Typography>
               <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 220, borderRadius: 1.5 }}>
@@ -257,7 +304,7 @@ export function BulkMessageModal({
                       <TableCell sx={{ fontWeight: 600, backgroundColor: '#f1f5f9' }}>Contact</TableCell>
                       <TableCell sx={{ fontWeight: 600, backgroundColor: '#f1f5f9' }}>Result</TableCell>
                       <TableCell sx={{ fontWeight: 600, backgroundColor: '#f1f5f9' }}>Status</TableCell>
-                      <TableCell sx={{ fontWeight: 600, backgroundColor: '#f1f5f9' }}>Provider Details</TableCell>
+                      <TableCell sx={{ fontWeight: 600, backgroundColor: '#f1f5f9' }}>Provider & Message ID</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
