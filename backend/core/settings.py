@@ -5,12 +5,13 @@ Clean Architecture + SOLID Principles
 
 from pathlib import Path
 from decouple import config
+import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-dev-key-change-in-production-12345')
 DEBUG = config('DEBUG', default=True, cast=bool)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=lambda v: [s.strip() for s in v.split(',')])
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='*', cast=lambda v: [s.strip() for s in v.split(',')])
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -31,6 +32,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -60,9 +62,14 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'core.wsgi.application'
 
+DATABASE_URL = config('DATABASE_URL', default=None)
 DB_ENGINE = config('DB_ENGINE', default='postgresql')
 
-if DB_ENGINE == 'sqlite3':
+if DATABASE_URL:
+    DATABASES = {
+        'default': dj_database_url.parse(DATABASE_URL, conn_max_age=600)
+    }
+elif DB_ENGINE == 'sqlite3':
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
@@ -80,6 +87,8 @@ else:
             'PORT': config('DB_PORT', default='5432'),
         }
     }
+
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},

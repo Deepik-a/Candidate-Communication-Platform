@@ -23,13 +23,15 @@ from urllib.parse import urlparse
 # message_id -> { id, recipient, content, channel, status, created_at, error, timestamp }
 MESSAGES_DB = {}
 
+import os
+
 # Simulation configuration
 SIM_CONFIG = {
     "mode": "normal",  # 'normal' | 'always_fail' | 'temporary_failure' | 'rate_limit' | 'delivery_failure'
     "temporary_failure_count": 0,
     "temporary_failure_threshold": 2,
     "rate_limit_active": False,
-    "webhook_url": "http://localhost:8000/api/v1/communications/webhook/",
+    "webhook_url": os.environ.get("WEBHOOK_URL", os.environ.get("BACKEND_WEBHOOK_URL", "http://localhost:8000/api/v1/communications/webhook/")),
 }
 
 WEBHOOK_LOGS = []
@@ -666,5 +668,5 @@ def run(port=9000):
 
 if __name__ == "__main__":
     import sys
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 9000
+    port = int(os.environ.get("PORT", sys.argv[1] if len(sys.argv) > 1 else 9000))
     run(port)
