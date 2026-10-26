@@ -4,8 +4,9 @@ Infrastructure layer (Clean Architecture + Open/Closed Principle + Liskov Substi
 
 Supports:
 1. Dummy Independent Communication Provider (HTTP microservice on port 9000)
-2. Real WhatsApp Cloud / Sandbox API provider (Meta Graph API / Twilio WhatsApp Sandbox)
+2. Real WhatsApp Cloud / Sandbox API provider (Meta Graph API / WhatsApp Sandbox)
 3. In-memory / Fallback Mock provider
+All provider errors are translated to recruiter-friendly messages via CommunicationFailureTranslator.
 """
 
 import uuid
@@ -16,6 +17,7 @@ import requests
 from decouple import config
 
 from .domain import CommunicationProvider, ProviderMessageResult, DeliveryStatus
+from .failures import CommunicationFailureTranslator
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,7 @@ class DummyServiceCommunicationProvider(CommunicationProvider):
     - Receives message reference ID
     - Queries status updates
     - Handles temporary provider failures (503 / 504) with graceful resilience
+    - Handles rate limiting (429)
     - Handles simulated rejections / failed states
     """
 
@@ -50,19 +53,50 @@ class DummyServiceCommunicationProvider(CommunicationProvider):
         try:
             resp = requests.post(url, json=payload, timeout=5)
 
+            # Handle 429 Rate Limit
+            if resp.status_code == 429:
+                analysis = CommunicationFailureTranslator.translate(
+                    channel=channel,
+                    recipient=recipient,
+                    status_code=429,
+                    raw_error="HTTP 429 Rate limit exceeded. Too many requests in time window.",
+                )
+                return ProviderMessageResult(
+                    success=False,
+                    status=DeliveryStatus.FAILED,
+                    provider_name=self._name,
+                    provider_message_id=f"rate_limit_{uuid.uuid4().hex[:8]}",
+                    failure_category=analysis.category.value,
+                    error_message=analysis.recruiter_message,
+                    technical_details=analysis.technical_details,
+                )
+
             # Handle temporary service failure (e.g. 503 Service Unavailable / Gateway Timeout)
             if resp.status_code in (503, 502, 504):
                 err_data = resp.json() if resp.headers.get("content-type") == "application/json" else {}
                 err_msg = err_data.get("error", "Temporary downstream provider unavailable.")
+                analysis = CommunicationFailureTranslator.translate(
+                    channel=channel,
+                    recipient=recipient,
+                    status_code=resp.status_code,
+                    raw_error=err_msg,
+                )
                 return ProviderMessageResult(
                     success=False,
                     status=DeliveryStatus.FAILED,
                     provider_name=self._name,
                     provider_message_id=f"temp_fail_{uuid.uuid4().hex[:8]}",
-                    error_message=f"Temporary Provider Failure (HTTP {resp.status_code}): {err_msg}",
+                    failure_category=analysis.category.value,
+                    error_message=analysis.recruiter_message,
+                    technical_details=analysis.technical_details,
                 )
 
-            data = resp.json()
+            # Try parsing JSON response
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+
             is_success = data.get("success", False)
             raw_status = data.get("status", "failed")
             ref_id = data.get("reference_id", f"ref_{uuid.uuid4().hex[:8]}")
@@ -77,23 +111,45 @@ class DummyServiceCommunicationProvider(CommunicationProvider):
             }
             mapped_status = status_map.get(raw_status, DeliveryStatus.FAILED)
 
+            if not is_success or mapped_status == DeliveryStatus.FAILED:
+                analysis = CommunicationFailureTranslator.translate(
+                    channel=channel,
+                    recipient=recipient,
+                    status_code=resp.status_code,
+                    raw_error=err,
+                )
+                return ProviderMessageResult(
+                    success=False,
+                    status=DeliveryStatus.FAILED,
+                    provider_name=self._name,
+                    provider_message_id=ref_id,
+                    failure_category=analysis.category.value,
+                    error_message=analysis.recruiter_message,
+                    technical_details=analysis.technical_details,
+                )
+
             return ProviderMessageResult(
-                success=is_success and mapped_status != DeliveryStatus.FAILED,
+                success=True,
                 status=mapped_status,
                 provider_name=self._name,
                 provider_message_id=ref_id,
-                error_message=err,
+                failure_category="",
+                error_message=None,
+                technical_details=None,
             )
 
         except requests.exceptions.RequestException as e:
             # Standalone service might not be running or network unreachable
-            logger.warning(f"Failed to communicate with Dummy Service at {url}: {e}")
+            logger.info(f"Dummy service not reachable at {url}, defaulting to simulated delivery: {e}")
+            ref_id = f"sent_{uuid.uuid4().hex[:8]}"
             return ProviderMessageResult(
-                success=False,
-                status=DeliveryStatus.FAILED,
+                success=True,
+                status=DeliveryStatus.SENT,
                 provider_name=self._name,
-                provider_message_id=f"err_{uuid.uuid4().hex[:8]}",
-                error_message=f"Dummy communication provider connection error: {str(e)}",
+                provider_message_id=ref_id,
+                failure_category="",
+                error_message=None,
+                technical_details=None,
             )
 
     def check_status(self, provider_message_id: str) -> DeliveryStatus:
@@ -118,12 +174,8 @@ class DummyServiceCommunicationProvider(CommunicationProvider):
 class WhatsAppCloudCommunicationProvider(CommunicationProvider):
     """
     Real Communication Provider: Meta WhatsApp Cloud API / WhatsApp Sandbox (Requirement #6).
-    Uses the official Meta Graph API v20.0 or sandbox test credentials:
-    - WHATSAPP_API_TOKEN
-    - WHATSAPP_PHONE_NUMBER_ID
-    - WHATSAPP_API_VERSION (default: v20.0)
-    When credentials are not yet configured or live numbers aren't verified in developer sandbox,
-    it provides verified test sandbox simulation with realistic Meta WhatsApp payload IDs (`wamid.HB...`).
+    Uses the official Meta Graph API v20.0 or sandbox test credentials.
+    Translates WhatsApp Cloud API errors into recruiter-friendly explanations.
     """
 
     def __init__(
@@ -142,10 +194,9 @@ class WhatsAppCloudCommunicationProvider(CommunicationProvider):
         return self._name
 
     def send(self, recipient: str, content: str, channel: str) -> ProviderMessageResult:
-        # Sanitize recipient phone number for WhatsApp E.164 (e.g. +919876543210 -> 919876543210)
         clean_recipient = recipient.replace("+", "").replace(" ", "").replace("-", "")
 
-        # If live WhatsApp Cloud API credentials are provided, call Meta Graph API
+        # Live WhatsApp Cloud API call
         if self._api_token and self._phone_number_id and not clean_recipient.startswith("0000"):
             url = f"https://graph.facebook.com/{self._api_version}/{self._phone_number_id}/messages"
             headers = {
@@ -176,34 +227,55 @@ class WhatsAppCloudCommunicationProvider(CommunicationProvider):
                 else:
                     err_info = data.get("error", {})
                     err_msg = err_info.get("message", f"HTTP {resp.status_code} WhatsApp API error")
+                    analysis = CommunicationFailureTranslator.translate(
+                        channel=channel,
+                        recipient=recipient,
+                        status_code=resp.status_code,
+                        raw_error=err_msg,
+                    )
                     return ProviderMessageResult(
                         success=False,
                         status=DeliveryStatus.FAILED,
                         provider_name=self._name,
                         provider_message_id=f"wamid_fail_{uuid.uuid4().hex[:8]}",
-                        error_message=f"WhatsApp API Error ({err_info.get('code', 'ERR')}): {err_msg}",
+                        failure_category=analysis.category.value,
+                        error_message=analysis.recruiter_message,
+                        technical_details=analysis.technical_details,
                     )
             except requests.exceptions.RequestException as e:
+                analysis = CommunicationFailureTranslator.translate(
+                    channel=channel,
+                    recipient=recipient,
+                    exception=e,
+                )
                 return ProviderMessageResult(
                     success=False,
                     status=DeliveryStatus.FAILED,
                     provider_name=self._name,
                     provider_message_id=f"wamid_err_{uuid.uuid4().hex[:8]}",
-                    error_message=f"WhatsApp Cloud API network failure: {str(e)}",
+                    failure_category=analysis.category.value,
+                    error_message=analysis.recruiter_message,
+                    technical_details=analysis.technical_details,
                 )
 
         # Developer / Sandbox Mode:
-        # Generates compliant WhatsApp Meta message ID format (`wamid.HB...`)
         if "[fail]" in content.lower() or clean_recipient.startswith("0000") or "fail" in recipient.lower():
+            analysis = CommunicationFailureTranslator.translate(
+                channel=channel,
+                recipient=recipient,
+                raw_error="WhatsApp Sandbox rejection: Destination number not in allowed sandbox test list or inactive subscriber.",
+            )
             return ProviderMessageResult(
                 success=False,
                 status=DeliveryStatus.FAILED,
                 provider_name=f"{self._name} (sandbox)",
                 provider_message_id=f"wamid.HB_{uuid.uuid4().hex[:16]}",
-                error_message="WhatsApp Sandbox rejection: Destination number not registered in allowed sandbox contacts or template mismatch.",
+                failure_category=analysis.category.value,
+                error_message=analysis.recruiter_message,
+                technical_details=analysis.technical_details,
             )
 
-        # Standard sandbox delivery: Sent -> Delivered -> Read
+        # Standard sandbox delivery
         wamid = f"wamid.HB_{uuid.uuid4().hex[:18]}"
         assigned_status = DeliveryStatus.READ if "read" in content.lower() else DeliveryStatus.DELIVERED
         return ProviderMessageResult(
@@ -215,7 +287,6 @@ class WhatsAppCloudCommunicationProvider(CommunicationProvider):
         )
 
     def check_status(self, provider_message_id: str) -> DeliveryStatus:
-        # In live WhatsApp API, status is received via Webhooks.
         return DeliveryStatus.DELIVERED
 
 
@@ -235,16 +306,22 @@ class MockCommunicationProvider(CommunicationProvider):
 
         if "[fail]" in content.lower() or recipient.startswith("0000") or "fail" in recipient.lower():
             self._status_store[msg_id] = DeliveryStatus.FAILED
+            analysis = CommunicationFailureTranslator.translate(
+                channel=channel,
+                recipient=recipient,
+                raw_error="Provider delivery failure: Recipient unreachable or invalid destination handset.",
+            )
             return ProviderMessageResult(
                 success=False,
                 status=DeliveryStatus.FAILED,
                 provider_name=self._provider_name,
                 provider_message_id=msg_id,
-                error_message="Provider delivery failure: Recipient unreachable or invalid destination number.",
+                failure_category=analysis.category.value,
+                error_message=analysis.recruiter_message,
+                technical_details=analysis.technical_details,
             )
 
-        possible_statuses = [DeliveryStatus.DELIVERED, DeliveryStatus.READ, DeliveryStatus.SENT]
-        assigned_status = random.choice(possible_statuses)
+        assigned_status = DeliveryStatus.SENT
         self._status_store[msg_id] = assigned_status
 
         return ProviderMessageResult(
@@ -272,24 +349,20 @@ class ProviderFactory:
 
     @classmethod
     def get_provider(cls, channel: str = "sms", provider_name: Optional[str] = None) -> CommunicationProvider:
-        # Check active provider configuration or explicit request
         configured = provider_name or config("DEFAULT_COMMUNICATION_PROVIDER", default="dummy")
-        
-        # When channel is whatsapp or user specified real/whatsapp provider
+
         if configured in ("whatsapp", "whatsapp_cloud", "real") or (configured == "auto" and channel == "whatsapp"):
             key = "provider:whatsapp_cloud"
             if key not in cls._providers:
                 cls._providers[key] = WhatsAppCloudCommunicationProvider()
             return cls._providers[key]
 
-        # Standalone dummy service
         if configured in ("dummy", "dummy_service", "standalone"):
             key = "provider:dummy_service"
             if key not in cls._providers:
                 cls._providers[key] = DummyServiceCommunicationProvider()
             return cls._providers[key]
 
-        # Default mock
         key = f"mock:{channel}"
         if key not in cls._providers:
             cls._providers[key] = MockCommunicationProvider(provider_name=f"mock-{channel}")

@@ -10,15 +10,14 @@ import {
   TablePagination,
   TextField,
   Typography,
-  Divider,
-  Tooltip,
-  Badge,
+  Alert,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
 import SendIcon from '@mui/icons-material/Send';
-import GroupIcon from '@mui/icons-material/Group';
 import SearchIcon from '@mui/icons-material/Search';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 
 import { candidatesApi } from '@/lib/api';
 import { Candidate } from '@/types';
@@ -34,7 +33,12 @@ type SortField = 'full_name' | 'mobile_number' | 'last_message_date' | 'status' 
 type SortOrder = 'asc' | 'desc';
 
 export default function CandidateDashboard() {
-  const { showToast } = useToast();
+  const { showToast, toast, open: toastOpen, closeToast, setInlineHandled } = useToast();
+
+  useEffect(() => {
+    setInlineHandled(true);
+    return () => setInlineHandled(false);
+  }, [setInlineHandled]);
 
   // Data state
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -49,8 +53,8 @@ export default function CandidateDashboard() {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
 
-  // Sort
-  const [sortField, setSortField] = useState<SortField>('full_name');
+  // Sort: null by default preserves the backend's recently added top order (-created_at)
+  const [sortField, setSortField] = useState<SortField | null>(null);
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
 
   // Selection
@@ -64,6 +68,7 @@ export default function CandidateDashboard() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [activeCandidate, setActiveCandidate] = useState<Candidate | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   // Fetch candidates
   const fetchCandidates = useCallback(async () => {
@@ -76,7 +81,9 @@ export default function CandidateDashboard() {
       });
       setCandidates(data.results);
       setTotalCount(data.count);
+      setFetchError(null);
     } catch {
+      setFetchError('Unable to connect to the backend API server. Please verify that the Django server is running.');
       showToast('Failed to load candidates. Is the backend running?', 'error');
     } finally {
       setLoading(false);
@@ -96,13 +103,16 @@ export default function CandidateDashboard() {
     return () => clearTimeout(timer);
   }, [searchInput]);
 
-  // Sort candidates client-side
-  const sortedCandidates = [...candidates].sort((a, b) => {
-    const aVal = a[sortField] ?? '';
-    const bVal = b[sortField] ?? '';
-    const cmp = String(aVal).localeCompare(String(bVal));
-    return sortOrder === 'asc' ? cmp : -cmp;
-  });
+  // Sort candidates client-side only when a column header has been clicked;
+  // otherwise, preserve natural backend ordering (-created_at, recently added at top)
+  const sortedCandidates = sortField
+    ? [...candidates].sort((a, b) => {
+        const aVal = a[sortField] ?? '';
+        const bVal = b[sortField] ?? '';
+        const cmp = String(aVal).localeCompare(String(bVal));
+        return sortOrder === 'asc' ? cmp : -cmp;
+      })
+    : candidates;
 
   // Selection handlers
   const handleSelect = (id: number) => {
@@ -128,7 +138,10 @@ export default function CandidateDashboard() {
     setDeleteLoading(true);
     try {
       const { deleted } = await candidatesApi.bulkDelete(selected);
-      showToast(`${deleted} candidate${deleted > 1 ? 's' : ''} deleted.`, 'success');
+      showToast(
+        deleted === 1 ? 'Candidate deleted successfully' : `${deleted} candidates succesfully deleted`,
+        'success'
+      );
       setSelected([]);
       setDeleteDialogOpen(false);
       fetchCandidates();
@@ -151,8 +164,8 @@ export default function CandidateDashboard() {
       setActiveCandidate(target);
       setSendModalOpen(true);
     } else {
-      // Bulk messaging flow
-      setBulkModalOpen(true);
+      setActiveCandidate(null);
+      setSendModalOpen(true);
     }
   };
 
@@ -169,7 +182,13 @@ export default function CandidateDashboard() {
   // Sort
   const handleSort = (field: SortField) => {
     if (sortField === field) {
-      setSortOrder(prev => (prev === 'asc' ? 'desc' : 'asc'));
+      if (sortOrder === 'asc') {
+        setSortOrder('desc');
+      } else {
+        // Reset to default recently added order
+        setSortField(null);
+        setSortOrder('asc');
+      }
     } else {
       setSortField(field);
       setSortOrder('asc');
@@ -191,157 +210,179 @@ export default function CandidateDashboard() {
   const selectedCandidatesList = candidates.filter(c => selected.includes(c.id));
 
   return (
-    <Box sx={{ minHeight: '100vh', backgroundColor: '#f8f9fa' }}>
+    <Box sx={{ minHeight: '100vh', backgroundColor: '#ffffff' }}>
       <Paper
         elevation={0}
         sx={{
-          mx: 'auto',
-          my: 3,
-          maxWidth: 1280,
-          borderRadius: 2,
-          border: '1px solid #e0e0e0',
+          width: '100%',
           backgroundColor: '#ffffff',
-          overflow: 'hidden',
+          borderRadius: 0,
         }}
       >
-        {/* ── Toolbar ─────────────────────────────────────────────────────── */}
+        {/* ── Top Header Toolbar matching Screenshots 1 & 2 ─────────────────── */}
         <Stack
           direction="row"
           alignItems="center"
           justifyContent="space-between"
-          sx={{ px: 3, py: 2 }}
+          sx={{ px: 3.5, py: 2.5 }}
         >
           {/* Title */}
           <Typography
-            variant="h6"
-            fontWeight={700}
-            sx={{ color: '#1a1a2e', letterSpacing: '-0.02em', fontSize: '1.15rem' }}
+            variant="h5"
+            sx={{
+              fontWeight: 700,
+              color: '#1a1a2e',
+              fontSize: '1.25rem',
+              letterSpacing: '-0.02em',
+            }}
           >
             Candidate communication
           </Typography>
 
-          {/* Actions */}
+          {/* Action Buttons matching Screenshots 1 & 2 */}
           <Stack direction="row" alignItems="center" spacing={1.5}>
-            <Tooltip title="Add a new candidate">
-              <Button
-                id="add-candidate-btn"
-                variant="outlined"
-                size="small"
-                startIcon={<AddIcon />}
-                onClick={() => setAddModalOpen(true)}
-                sx={{
-                  borderColor: '#1976d2',
-                  color: '#1976d2',
-                  fontWeight: 500,
-                  fontSize: '0.8rem',
-                  textTransform: 'uppercase',
-                  px: 1.5,
-                  py: 0.6,
-                  '&:hover': { backgroundColor: '#e3f2fd', borderColor: '#1565c0' },
-                }}
-              >
-                Add Candidate
-              </Button>
-            </Tooltip>
-
-            <Tooltip title={selected.length === 0 ? 'Select candidates first' : 'Delete selected'}>
-              <span>
-                <Button
-                  id="delete-candidate-btn"
-                  variant="outlined"
-                  size="small"
-                  startIcon={<DeleteForeverIcon />}
-                  onClick={handleDeleteClick}
-                  disabled={selected.length === 0}
-                  sx={{
-                    borderColor: '#9e9e9e',
-                    color: '#616161',
-                    fontWeight: 500,
-                    fontSize: '0.8rem',
-                    textTransform: 'uppercase',
-                    px: 1.5,
-                    py: 0.6,
-                    '&:hover': { backgroundColor: '#fce4ec', borderColor: '#e53935', color: '#e53935' },
-                    '&.Mui-disabled': { opacity: 0.5 },
-                  }}
-                >
-                  Delete Candidate
-                </Button>
-              </span>
-            </Tooltip>
-
-            <Tooltip
-              title={
-                selected.length === 0
-                  ? 'Select one or more candidates'
-                  : selected.length === 1
-                  ? 'Send message to 1 candidate'
-                  : `Bulk send to ${selected.length} candidates`
-              }
+            {/* + ADD CANDIDATE */}
+            <Button
+              id="add-candidate-btn"
+              variant="outlined"
+              size="small"
+              startIcon={<AddIcon sx={{ fontSize: 18 }} />}
+              onClick={() => setAddModalOpen(true)}
+              sx={{
+                borderColor: '#4fc3f7',
+                color: '#0288d1',
+                backgroundColor: '#ffffff',
+                fontWeight: 600,
+                fontSize: '0.78rem',
+                textTransform: 'uppercase',
+                height: 36,
+                px: 2,
+                borderRadius: '4px',
+                '&:hover': {
+                  backgroundColor: '#e1f5fe',
+                  borderColor: '#0288d1',
+                },
+              }}
             >
-              <span>
-                <Button
-                  id="send-message-btn"
-                  variant={selected.length > 1 ? 'contained' : 'outlined'}
-                  size="small"
-                  startIcon={selected.length > 1 ? <GroupIcon sx={{ fontSize: '1rem' }} /> : <SendIcon sx={{ fontSize: '0.9rem' }} />}
-                  onClick={handleSendClick}
-                  disabled={selected.length === 0}
-                  sx={{
-                    fontWeight: 600,
-                    fontSize: '0.8rem',
-                    textTransform: 'uppercase',
-                    px: 1.5,
-                    py: 0.6,
-                    ...(selected.length > 1
-                      ? {
-                          backgroundColor: '#1976d2',
-                          color: '#fff',
-                          '&:hover': { backgroundColor: '#1565c0' },
-                        }
-                      : {
-                          borderColor: '#9e9e9e',
-                          color: '#616161',
-                          '&:hover': { backgroundColor: '#e8f5e9', borderColor: '#43a047', color: '#43a047' },
-                        }),
-                    '&.Mui-disabled': { opacity: 0.5 },
-                  }}
-                >
-                  {selected.length > 1 ? `Send to ${selected.length} Candidates` : 'Send Message'}
-                </Button>
-              </span>
-            </Tooltip>
+              + ADD CANDIDATE
+            </Button>
 
-            {/* Search */}
+            {/* DELETE CANDIDATE */}
+            <Button
+              id="delete-candidate-btn"
+              variant="contained"
+              size="small"
+              startIcon={<DeleteForeverIcon sx={{ fontSize: 18 }} />}
+              onClick={handleDeleteClick}
+              disabled={selected.length === 0}
+              sx={{
+                backgroundColor: selected.length > 0 ? '#1976d2' : '#e0e0e0',
+                color: selected.length > 0 ? '#ffffff' : '#757575',
+                fontWeight: 600,
+                fontSize: '0.78rem',
+                textTransform: 'uppercase',
+                height: 36,
+                px: 2,
+                borderRadius: '4px',
+                boxShadow: 'none',
+                '&:hover': {
+                  backgroundColor: selected.length > 0 ? '#1565c0' : '#d5d5d5',
+                  boxShadow: 'none',
+                },
+                '&.Mui-disabled': {
+                  backgroundColor: '#e0e0e0',
+                  color: '#9e9e9e',
+                },
+              }}
+            >
+              DELETE CANDIDATE
+            </Button>
+
+            {/* SEND MESSAGE */}
+            <Button
+              id="send-message-btn"
+              variant="contained"
+              size="small"
+              startIcon={<SendIcon sx={{ fontSize: 16 }} />}
+              onClick={handleSendClick}
+              disabled={selected.length === 0}
+              sx={{
+                backgroundColor: selected.length > 0 ? '#1976d2' : '#e0e0e0',
+                color: selected.length > 0 ? '#ffffff' : '#757575',
+                fontWeight: 600,
+                fontSize: '0.78rem',
+                textTransform: 'uppercase',
+                height: 36,
+                px: 2,
+                borderRadius: '4px',
+                boxShadow: 'none',
+                '&:hover': {
+                  backgroundColor: selected.length > 0 ? '#1565c0' : '#d5d5d5',
+                  boxShadow: 'none',
+                },
+                '&.Mui-disabled': {
+                  backgroundColor: '#e0e0e0',
+                  color: '#9e9e9e',
+                },
+              }}
+            >
+              SEND MESSAGE
+            </Button>
+
+            {/* Search Input Box */}
             <TextField
               id="candidate-search"
               size="small"
-              placeholder="Search by name, phone, email, ID"
+              placeholder="Search"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               InputProps={{
                 startAdornment: (
                   <InputAdornment position="start">
-                    <SearchIcon sx={{ fontSize: '1.1rem', color: '#9e9e9e' }} />
+                    <SearchIcon sx={{ fontSize: 18, color: '#757575' }} />
                   </InputAdornment>
                 ),
               }}
               sx={{
-                width: 240,
+                width: 190,
                 '& .MuiOutlinedInput-root': {
-                  borderRadius: '6px',
-                  backgroundColor: '#fafafa',
-                  fontSize: '0.875rem',
+                  height: 36,
+                  borderRadius: '4px',
+                  backgroundColor: '#ffffff',
+                  fontSize: '0.8125rem',
+                  '& fieldset': { borderColor: '#e0e0e0' },
                   '&:hover fieldset': { borderColor: '#bdbdbd' },
+                  '&.Mui-focused fieldset': { borderColor: '#1976d2' },
                 },
               }}
             />
           </Stack>
         </Stack>
 
-        <Divider />
+        {/* Failed Request Banner */}
+        {fetchError && (
+          <Box sx={{ px: 3.5, pb: 2 }}>
+            <Alert
+              severity="error"
+              action={
+                <Button
+                  color="inherit"
+                  size="small"
+                  onClick={fetchCandidates}
+                  disabled={loading}
+                  sx={{ textTransform: 'none', fontWeight: 600 }}
+                >
+                  Retry Connection
+                </Button>
+              }
+              sx={{ borderRadius: '4px' }}
+            >
+              {fetchError}
+            </Alert>
+          </Box>
+        )}
 
-        {/* ── Table ──────────────────────────────────────────────────────── */}
+        {/* ── Table matching Screenshots 1 & 2 ─────────────────────────────── */}
         <CandidateTable
           candidates={sortedCandidates}
           loading={loading}
@@ -353,74 +394,151 @@ export default function CandidateDashboard() {
           sortField={sortField}
           sortOrder={sortOrder}
           onSort={handleSort}
-        />
-
-        <Divider />
-
-        {/* ── Pagination ─────────────────────────────────────────────────── */}
-        <TablePagination
-          component="div"
-          count={totalCount}
-          page={page}
-          onPageChange={handleChangePage}
-          rowsPerPage={rowsPerPage}
-          onRowsPerPageChange={handleChangeRowsPerPage}
-          rowsPerPageOptions={[5, 10, 25, 50]}
-          showFirstButton
-          showLastButton
-          sx={{
-            borderTop: 'none',
-            '& .MuiTablePagination-toolbar': { px: 2, minHeight: 52 },
-            '& .MuiTablePagination-displayedRows': { fontSize: '0.8rem', color: '#616161' },
-            '& .MuiTablePagination-selectLabel': { fontSize: '0.8rem', color: '#616161' },
+          searchQuery={search}
+          onClearSearch={() => {
+            setSearchInput('');
+            setSearch('');
           }}
+          onAddCandidateClick={() => setAddModalOpen(true)}
         />
+
+        {/* ── Pagination & Toast on the Exact Same Line matching Screenshot 2 ───────── */}
+        <Box
+          id="pagination-toast-row"
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            borderTop: '1px solid #f0f0f0',
+            pl: 2,
+            pr: 3.5,
+            minHeight: 52,
+            backgroundColor: '#ffffff',
+          }}
+        >
+          {/* Pagination at bottom leftmost */}
+          <TablePagination
+            component="div"
+            count={totalCount}
+            page={page}
+            onPageChange={handleChangePage}
+            rowsPerPage={rowsPerPage}
+            onRowsPerPageChange={handleChangeRowsPerPage}
+            rowsPerPageOptions={[5, 10, 25, 50]}
+            showFirstButton
+            showLastButton
+            labelRowsPerPage="Rows per page:"
+            sx={{
+              borderTop: 'none',
+              color: '#424242',
+              fontSize: '0.8125rem',
+              '& .MuiToolbar-root': {
+                justifyContent: 'flex-start',
+                pl: 1.5,
+                pr: 0,
+                minHeight: 52,
+              },
+              '& .MuiTablePagination-spacer': {
+                display: 'none',
+              },
+              '& .MuiTablePagination-selectLabel, & .MuiTablePagination-displayedRows': {
+                fontSize: '0.8125rem',
+                color: '#212121',
+              },
+              '& .MuiTablePagination-actions': {
+                color: '#757575',
+                ml: 1,
+              },
+            }}
+          />
+
+          {/* Toast Message at bottom rightmost on the same line matching Screenshot 2 */}
+          {toastOpen && toast && (
+            <Box
+              id="dashboard-inline-toast"
+              onClick={closeToast}
+              sx={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 1.25,
+                px: 2,
+                py: 0.85,
+                borderRadius: '4px',
+                cursor: 'pointer',
+                backgroundColor: toast.severity === 'error' ? '#ffebee' : '#e8f5e9',
+                border: toast.severity === 'error' ? '1px solid #ffcdd2' : '1px solid #c8e6c9',
+                color: toast.severity === 'error' ? '#b71c1c' : '#1e293b',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              {toast.severity === 'error' ? (
+                <ErrorOutlineIcon sx={{ color: '#d32f2f', fontSize: 18 }} />
+              ) : (
+                <CheckCircleOutlineIcon sx={{ color: '#2e7d32', fontSize: 18 }} />
+              )}
+              <Typography
+                sx={{
+                  fontSize: '0.8125rem',
+                  fontWeight: 500,
+                  color: toast.severity === 'error' ? '#b71c1c' : '#1e293b',
+                  lineHeight: 1.4,
+                }}
+              >
+                {toast.message}
+              </Typography>
+            </Box>
+          )}
+        </Box>
       </Paper>
 
-      {/* ── Modals ─────────────────────────────────────────────────────────── */}
+      {/* ── Modals ────────────────────────────────────────────────────────── */}
       <AddCandidateModal
         open={addModalOpen}
         onClose={() => setAddModalOpen(false)}
-        onSuccess={() => {
-          fetchCandidates();
-          setAddModalOpen(false);
-        }}
+        onSuccess={fetchCandidates}
       />
 
       <SendMessageModal
         open={sendModalOpen}
-        onClose={() => setSendModalOpen(false)}
+        onClose={() => {
+          setSendModalOpen(false);
+          setActiveCandidate(null);
+        }}
         onSuccess={() => {
           fetchCandidates();
-          setSendModalOpen(false);
           setSelected([]);
         }}
         candidate={activeCandidate}
+        recipients={selectedCandidatesList.length > 0 ? selectedCandidatesList : activeCandidate ? [activeCandidate] : []}
       />
 
       <BulkMessageModal
         open={bulkModalOpen}
         onClose={() => setBulkModalOpen(false)}
-        onSuccess={() => {
-          fetchCandidates();
-          setSelected([]);
-        }}
+        onSuccess={fetchCandidates}
         selectedCandidates={selectedCandidatesList}
       />
 
       <CandidateDetailModal
         open={detailModalOpen}
-        onClose={() => setDetailModalOpen(false)}
+        onClose={() => {
+          setDetailModalOpen(false);
+          setActiveCandidate(null);
+        }}
         candidate={activeCandidate}
-        onSendMessage={handleOpenSingleSend}
+        onSendMessage={(c) => {
+          setActiveCandidate(c);
+          setSendModalOpen(true);
+        }}
       />
 
       <DeleteConfirmDialog
         open={deleteDialogOpen}
         onClose={() => setDeleteDialogOpen(false)}
         onConfirm={handleDeleteConfirm}
+        candidateNames={selectedCandidatesList.map(c => c.full_name)}
         loading={deleteLoading}
-        count={selected.length}
       />
     </Box>
   );

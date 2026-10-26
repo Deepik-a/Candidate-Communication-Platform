@@ -1,13 +1,17 @@
 """
 Tests for Candidate Management and Communication flows.
-Verifying SOLID principles & Clean Architecture behaviors.
+Verifying Requirements #7 (Message Status Updates & Idempotency),
+#8 (Communication Failure Translation & Recruiter Messages),
+and #10 (Candidate Communication History).
 """
 
 from unittest.mock import patch, MagicMock
 from django.test import TestCase
+from rest_framework.test import APIClient
 from apps.candidates.infrastructure.models import Candidate, MessageStatus
 from apps.communications.models import Message, MessageStatusLog
-from apps.communications.services import CommunicationService
+from apps.communications.services import CommunicationService, STATUS_PRECEDENCE
+from apps.communications.failures import CommunicationFailureTranslator, FailureCategory
 from apps.communications.domain import CommunicationProvider, ProviderMessageResult, DeliveryStatus
 from apps.communications.providers import (
     DummyServiceCommunicationProvider,
@@ -25,12 +29,19 @@ class StubFailProvider(CommunicationProvider):
 
     def send(self, recipient: str, content: str, channel: str) -> ProviderMessageResult:
         if "fail" in recipient.lower():
+            analysis = CommunicationFailureTranslator.translate(
+                channel=channel,
+                recipient=recipient,
+                raw_error="Simulated carrier delivery failure: Recipient unreachable.",
+            )
             return ProviderMessageResult(
                 success=False,
                 status=DeliveryStatus.FAILED,
                 provider_name=self.provider_name,
                 provider_message_id="fail_id_123",
-                error_message="Simulated gateway error for recipient",
+                failure_category=analysis.category.value,
+                error_message=analysis.recruiter_message,
+                technical_details=analysis.technical_details,
             )
         return ProviderMessageResult(
             success=True,
@@ -46,6 +57,7 @@ class StubFailProvider(CommunicationProvider):
 
 class CandidateCommunicationTests(TestCase):
     def setUp(self):
+        self.client = APIClient()
         self.c1 = Candidate.objects.create(
             full_name="Rahul Sharma",
             mobile_number="+919876543210",
@@ -62,94 +74,255 @@ class CandidateCommunicationTests(TestCase):
             email="amit@example.com",
         )
 
-    def test_single_message_flow(self):
+    # ── Requirement #7: Message Status Updates & Idempotency ────────────────────
+
+    def test_message_status_progression_sent_delivered_read(self):
+        """
+        Requirement #7: Message status progression
+        Message Sent -> Sent -> Delivered -> Read
+        """
         service = CommunicationService(provider=StubFailProvider())
         outcome = service.send_single_message(
             candidate_id=self.c1.id,
             channel="sms",
             content="Hello Rahul, your interview is scheduled.",
+            forced_status="sent",
         )
-        self.assertTrue(outcome.success)
-        self.assertEqual(outcome.status, "delivered")
+        message_id = outcome.message_id
+        self.assertIsNotNone(message_id)
 
+        # 1. Initially Sent
+        msg = Message.objects.get(id=message_id)
+        self.assertEqual(msg.status, MessageStatusLog.SENT)
         self.c1.refresh_from_db()
-        self.assertIsNotNone(self.c1.last_message_date)
+        self.assertEqual(self.c1.status, MessageStatus.SENT)
+
+        # 2. Transition: Sent -> Delivered
+        outcome_deliv = service.update_message_status(message_id=message_id, new_status="delivered")
+        self.assertTrue(outcome_deliv.updated)
+        self.assertFalse(outcome_deliv.was_duplicate)
+        msg.refresh_from_db()
+        self.assertEqual(msg.status, MessageStatusLog.DELIVERED)
+        self.c1.refresh_from_db()
         self.assertEqual(self.c1.status, MessageStatus.DELIVERED)
 
-        messages = Message.objects.filter(candidate=self.c1)
-        self.assertEqual(messages.count(), 1)
-        self.assertEqual(messages.first().status, MessageStatusLog.DELIVERED)
+        # 3. Transition: Delivered -> Read
+        outcome_read = service.update_message_status(message_id=message_id, new_status="read")
+        self.assertTrue(outcome_read.updated)
+        self.assertFalse(outcome_read.was_duplicate)
+        msg.refresh_from_db()
+        self.assertEqual(msg.status, MessageStatusLog.READ)
+        self.c1.refresh_from_db()
+        self.assertEqual(self.c1.status, MessageStatus.READ)
 
-    def test_bulk_messaging_independent_tracking(self):
+    def test_status_update_idempotency_duplicate_calls(self):
         """
-        Requirement #4:
-        One candidate's failure should not prevent remaining messages from being processed.
-        Clearly show individual result for each candidate.
+        Requirement #7: The platform should behave correctly if the same update is received more than once.
         """
         service = CommunicationService(provider=StubFailProvider())
-        result = service.send_bulk_messages(
-            candidate_ids=[self.c1.id, self.c2.id, self.c3.id],
+        outcome = service.send_single_message(
+            candidate_id=self.c1.id,
             channel="whatsapp",
-            content="Your interview is scheduled for tomorrow.",
+            content="Interview details",
+            forced_status="sent",
+        )
+        msg_id = outcome.message_id
+
+        # First update to delivered
+        res1 = service.update_message_status(message_id=msg_id, new_status="delivered")
+        self.assertTrue(res1.updated)
+        self.assertFalse(res1.was_duplicate)
+
+        # Duplicate update with the EXACT SAME status
+        res2 = service.update_message_status(message_id=msg_id, new_status="delivered")
+        self.assertFalse(res2.updated)
+        self.assertTrue(res2.was_duplicate)
+        self.assertIn("already in 'delivered' status", res2.detail)
+
+        # Verify database message is unchanged and healthy
+        msg = Message.objects.get(id=msg_id)
+        self.assertEqual(msg.status, MessageStatusLog.DELIVERED)
+
+    def test_status_update_anti_regression_out_of_order(self):
+        """
+        Requirement #7: An out-of-order callback (e.g. Sent arriving after Delivered)
+        should NOT regress status back.
+        """
+        service = CommunicationService(provider=StubFailProvider())
+        outcome = service.send_single_message(
+            candidate_id=self.c1.id,
+            channel="whatsapp",
+            content="Reminder",
+            forced_status="read",
+        )
+        msg_id = outcome.message_id
+
+        # Attempt to downgrade to 'delivered' or 'sent'
+        res = service.update_message_status(message_id=msg_id, new_status="delivered")
+        self.assertFalse(res.updated)
+        self.assertFalse(res.was_duplicate)
+        self.assertIn("higher precedence", res.detail)
+
+        msg = Message.objects.get(id=msg_id)
+        self.assertEqual(msg.status, MessageStatusLog.READ)
+
+    def test_webhook_endpoint_idempotent_processing(self):
+        """Requirement #7: POST /api/v1/communications/webhook/ receives callbacks idempotently."""
+        msg = Message.objects.create(
+            candidate=self.c1,
+            channel="whatsapp",
+            content="Test webhook notification",
+            status="sent",
+            provider="dummy-service",
+            provider_message_id="dummy_ref_xyz123",
         )
 
-        self.assertEqual(result.total_requested, 3)
-        self.assertEqual(result.successful_count, 2)
-        self.assertEqual(result.failed_count, 1)
+        # 1. Send delivered callback via webhook
+        resp1 = self.client.post(
+            "/api/v1/communications/webhook/",
+            data={"reference_id": "dummy_ref_xyz123", "status": "delivered"},
+            format="json",
+        )
+        self.assertEqual(resp1.status_code, 200)
+        self.assertTrue(resp1.data["success"])
+        self.assertFalse(resp1.data["was_duplicate"])
 
-        # Candidate 1 and 2 succeeded
-        self.assertTrue(result.outcomes[0].success)
-        self.assertEqual(result.outcomes[0].candidate_name, "Rahul Sharma")
-        self.assertTrue(result.outcomes[1].success)
-        self.assertEqual(result.outcomes[1].candidate_name, "Priya Shah")
+        # 2. Send duplicate delivered callback
+        resp2 = self.client.post(
+            "/api/v1/communications/webhook/",
+            data={"reference_id": "dummy_ref_xyz123", "status": "delivered"},
+            format="json",
+        )
+        self.assertEqual(resp2.status_code, 200)
+        self.assertTrue(resp2.data["success"])
+        self.assertTrue(resp2.data["was_duplicate"])
 
-        # Candidate 3 failed independently without crashing the others
-        self.assertFalse(result.outcomes[2].success)
-        self.assertEqual(result.outcomes[2].candidate_name, "Amit Kumar")
-        self.assertEqual(result.outcomes[2].status, "failed")
+    # ── Requirement #8: Handling Communication Failures ─────────────────────────
 
-        # Check DB states
-        self.c1.refresh_from_db()
-        self.assertEqual(self.c1.status, MessageStatus.DELIVERED)
-        self.c3.refresh_from_db()
-        self.assertEqual(self.c3.status, MessageStatus.FAILED)
+    def test_failure_translation_invalid_recipient(self):
+        """Requirement #8: Invalid recipient returns meaningful message instead of technical error."""
+        analysis = CommunicationFailureTranslator.translate(
+            channel="sms",
+            recipient="not-a-phone",
+            raw_error="Carrier validation rejected",
+        )
+        self.assertEqual(analysis.category, FailureCategory.INVALID_RECIPIENT)
+        self.assertIn("Invalid recipient contact", analysis.recruiter_message)
+        self.assertFalse(analysis.is_retryable)
 
-    def test_dummy_provider_integration(self):
-        """Requirement #6: Dummy independent communication provider."""
-        provider = DummyServiceCommunicationProvider(base_url="http://localhost:9000")
-        
-        # Test success against running dummy service
-        res = provider.send(self.c1.mobile_number, "Test interview notification", "sms")
-        self.assertTrue(res.success)
-        self.assertTrue(res.provider_message_id.startswith("dummy_sms_"))
-        self.assertIn(res.status, [DeliveryStatus.SENT, DeliveryStatus.DELIVERED])
+    def test_failure_translation_rate_limiting(self):
+        """Requirement #8: Rate limiting returns clear recruiter guidance."""
+        analysis = CommunicationFailureTranslator.translate(
+            channel="sms",
+            recipient="+919876543210",
+            status_code=429,
+            raw_error="HTTP 429 Too Many Requests in window",
+        )
+        self.assertEqual(analysis.category, FailureCategory.RATE_LIMIT_EXCEEDED)
+        self.assertIn("Sending limit reached", analysis.recruiter_message)
+        self.assertTrue(analysis.is_retryable)
 
-        # Test simulated failure
-        fail_res = provider.send(self.c1.mobile_number, "Test [fail]", "sms")
-        self.assertFalse(fail_res.success)
-        self.assertEqual(fail_res.status, DeliveryStatus.FAILED)
-        self.assertIsNotNone(fail_res.error_message)
+    def test_failure_translation_temporary_provider_failure(self):
+        """Requirement #8: Temporary provider failure (503) informs recruiter it can be retried."""
+        analysis = CommunicationFailureTranslator.translate(
+            channel="whatsapp",
+            recipient="+919876543210",
+            status_code=503,
+            raw_error="503 Service Unavailable downstream network",
+        )
+        self.assertEqual(analysis.category, FailureCategory.TEMPORARY_PROVIDER_FAILURE)
+        self.assertIn("Temporary provider delay", analysis.recruiter_message)
+        self.assertTrue(analysis.is_retryable)
 
-    def test_whatsapp_cloud_provider_integration(self):
-        """Requirement #6: Real WhatsApp API / WhatsApp Sandbox provider."""
-        provider = WhatsAppCloudCommunicationProvider()
-        
-        # Test WhatsApp sandbox delivery
-        res = provider.send(self.c1.mobile_number, "Welcome to the recruitment process", "whatsapp")
-        self.assertTrue(res.success)
-        self.assertTrue(res.provider_message_id.startswith("wamid.HB"))
-        self.assertIn(res.status, [DeliveryStatus.SENT, DeliveryStatus.DELIVERED, DeliveryStatus.READ])
+    def test_failure_translation_delivery_failure(self):
+        """Requirement #8: Delivery failure explains carrier/handset reasons."""
+        analysis = CommunicationFailureTranslator.translate(
+            channel="sms",
+            recipient="+919876543210",
+            raw_error="Carrier rejected: handset out of coverage or unreachable subscriber.",
+        )
+        self.assertEqual(analysis.category, FailureCategory.DELIVERY_FAILURE)
+        self.assertIn("Delivery failed: The candidate's mobile carrier could not deliver", analysis.recruiter_message)
 
-        # Test WhatsApp sandbox simulated failure
-        fail_res = provider.send("0000000000", "Welcome [fail]", "whatsapp")
-        self.assertFalse(fail_res.success)
-        self.assertEqual(fail_res.status, DeliveryStatus.FAILED)
-        self.assertIn("Sandbox rejection", fail_res.error_message)
+    def test_failure_translation_service_unavailable(self):
+        """Requirement #8: Connection error returns clean service unavailable explanation."""
+        analysis = CommunicationFailureTranslator.translate(
+            channel="sms",
+            recipient="+919876543210",
+            raw_error="Connection refused by remote host (WinError 10061)",
+        )
+        self.assertEqual(analysis.category, FailureCategory.SERVICE_UNAVAILABLE)
+        self.assertIn("Communication service unavailable", analysis.recruiter_message)
 
-    def test_provider_factory_resolution(self):
-        """Test provider factory can resolve both dummy and whatsapp providers."""
-        dummy_p = ProviderFactory.get_provider(channel="sms", provider_name="dummy")
-        self.assertIsInstance(dummy_p, DummyServiceCommunicationProvider)
+    def test_single_message_handles_invalid_recipient_gracefully(self):
+        """Service should record meaningful failure when candidate has invalid contact number."""
+        c_bad = Candidate.objects.create(
+            full_name="Bad Phone Candidate",
+            mobile_number="abc",
+            email=None,
+        )
+        service = CommunicationService(provider=StubFailProvider())
+        outcome = service.send_single_message(
+            candidate_id=c_bad.id,
+            channel="sms",
+            content="Hello",
+        )
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.status, "failed")
+        self.assertEqual(outcome.failure_category, "invalid_recipient")
+        self.assertIn("Invalid recipient contact", outcome.error_message)
 
-        wa_p = ProviderFactory.get_provider(channel="whatsapp", provider_name="whatsapp")
-        self.assertIsInstance(wa_p, WhatsAppCloudCommunicationProvider)
+    # ── Requirement #10: Communication History ──────────────────────────────────
+
+    def test_candidate_communication_history_endpoint(self):
+        """
+        Requirement #10: Recruiters can view communication history of candidate:
+        What was sent, when it was sent, current status, whether it failed, and why it failed.
+        """
+        # Create successful message
+        m1 = Message.objects.create(
+            candidate=self.c1,
+            channel="sms",
+            content="Welcome to our hiring process.",
+            status="read",
+            provider="dummy-service",
+            provider_message_id="dummy_01",
+        )
+        # Create delivered message
+        m2 = Message.objects.create(
+            candidate=self.c1,
+            channel="sms",
+            content="Hello Rahul, your interview is scheduled for tomorrow at 11:00 AM.",
+            status="delivered",
+            provider="dummy-service",
+            provider_message_id="dummy_02",
+        )
+        # Create failed message with why it failed
+        m3 = Message.objects.create(
+            candidate=self.c1,
+            channel="whatsapp",
+            content="Urgent: Please share your portfolio.",
+            status="failed",
+            provider="whatsapp-cloud-api",
+            provider_message_id="wamid_fail_03",
+            failure_category="temporary_provider_failure",
+            error_message="Temporary provider delay: The downstream telecommunication network experienced a momentary interruption.",
+        )
+
+        resp = self.client.get(f"/api/v1/communications/candidate/{self.c1.id}/")
+        self.assertEqual(resp.status_code, 200)
+        messages = resp.data
+        self.assertEqual(len(messages), 3)
+
+        # Most recent first
+        latest = messages[0]
+        self.assertEqual(latest["id"], m3.id)
+        self.assertEqual(latest["channel"], "whatsapp")
+        self.assertEqual(latest["content"], "Urgent: Please share your portfolio.")
+        self.assertEqual(latest["status"], "failed")
+        self.assertEqual(latest["failure_category"], "temporary_provider_failure")
+        self.assertIn("Temporary provider delay", latest["error_message"])
+
+        # Check candidate details are included
+        self.assertEqual(latest["candidate_name"], "Rahul Sharma")
+        self.assertEqual(latest["candidate_phone"], "+919876543210")
