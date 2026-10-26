@@ -13,7 +13,11 @@ import {
   Box,
   TableSortLabel,
   Skeleton,
+  IconButton,
+  Tooltip,
 } from '@mui/material';
+import SendIcon from '@mui/icons-material/Send';
+import VisibilityIcon from '@mui/icons-material/Visibility';
 import { Candidate } from '@/types';
 import { StatusBadge } from './StatusBadge';
 
@@ -27,24 +31,28 @@ interface CandidateTableProps {
   onSelect: (id: number) => void;
   onSelectAll: (checked: boolean) => void;
   onCandidateClick: (candidate: Candidate) => void;
+  onSendMessageClick: (candidate: Candidate) => void;
   sortField: SortField;
   sortOrder: SortOrder;
   onSort: (field: SortField) => void;
 }
 
 const columns: { id: SortField; label: string; width?: string }[] = [
-  { id: 'full_name', label: 'Full name', width: '25%' },
-  { id: 'mobile_number', label: 'Mobile number', width: '20%' },
-  { id: 'last_message_date', label: 'Last message', width: '18%' },
-  { id: 'status', label: 'Status', width: '17%' },
-  { id: 'candidate_id', label: 'Candidate ID', width: '20%' },
+  { id: 'full_name', label: 'Full name', width: '24%' },
+  { id: 'mobile_number', label: 'Mobile number', width: '18%' },
+  { id: 'last_message_date', label: 'Last message', width: '16%' },
+  { id: 'status', label: 'Status', width: '16%' },
+  { id: 'candidate_id', label: 'Candidate ID', width: '14%' },
 ];
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return 'NA';
-  // Format as DD-MM-YYYY to match screenshot
-  const [year, month, day] = dateStr.split('-');
-  return `${day}-${month}-${year}`;
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    const [year, month, day] = parts;
+    return `${day}-${month}-${year}`;
+  }
+  return dateStr;
 }
 
 export function CandidateTable({
@@ -54,6 +62,7 @@ export function CandidateTable({
   onSelect,
   onSelectAll,
   onCandidateClick,
+  onSendMessageClick,
   sortField,
   sortOrder,
   onSort,
@@ -85,7 +94,7 @@ export function CandidateTable({
       <Table size="medium" aria-label="candidate table">
         <TableHead>
           <TableRow>
-            <TableCell padding="checkbox" sx={{ ...headerSx, pl: 2 }}>
+            <TableCell padding="checkbox" sx={{ ...headerSx, pl: 2, width: '4%' }}>
               <Checkbox
                 id="select-all-checkbox"
                 size="small"
@@ -111,6 +120,9 @@ export function CandidateTable({
                 </TableSortLabel>
               </TableCell>
             ))}
+            <TableCell sx={{ ...headerSx, width: '8%', textAlign: 'right', pr: 3 }}>
+              Actions
+            </TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
@@ -125,12 +137,15 @@ export function CandidateTable({
                       <Skeleton variant="text" width={col.id === 'full_name' ? 140 : 100} />
                     </TableCell>
                   ))}
+                  <TableCell sx={{ pr: 3 }}>
+                    <Skeleton variant="circular" width={24} height={24} sx={{ ml: 'auto' }} />
+                  </TableCell>
                 </TableRow>
               ))
             : candidates.length === 0
             ? (
               <TableRow>
-                <TableCell colSpan={6} sx={{ textAlign: 'center', py: 6 }}>
+                <TableCell colSpan={7} sx={{ textAlign: 'center', py: 6 }}>
                   <Typography color="text.secondary" variant="body2">
                     No candidates found. Add one using the button above.
                   </Typography>
@@ -162,20 +177,27 @@ export function CandidateTable({
                       />
                     </TableCell>
                     <TableCell sx={cellSx}>
-                      <Typography
-                        component="span"
-                        sx={{
-                          color: '#1565c0',
-                          fontWeight: 500,
-                          fontSize: '0.875rem',
-                          cursor: 'pointer',
-                          '&:hover': { textDecoration: 'underline' },
-                        }}
-                        onClick={() => onCandidateClick(candidate)}
-                        id={`candidate-name-${candidate.id}`}
-                      >
-                        {candidate.full_name}
-                      </Typography>
+                      <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+                        <Typography
+                          component="span"
+                          sx={{
+                            color: '#1565c0',
+                            fontWeight: 500,
+                            fontSize: '0.875rem',
+                            cursor: 'pointer',
+                            '&:hover': { textDecoration: 'underline' },
+                          }}
+                          onClick={() => onCandidateClick(candidate)}
+                          id={`candidate-name-${candidate.id}`}
+                        >
+                          {candidate.full_name}
+                        </Typography>
+                        {candidate.email && (
+                          <Typography variant="caption" sx={{ color: '#64748b' }}>
+                            {candidate.email}
+                          </Typography>
+                        )}
+                      </Box>
                     </TableCell>
                     <TableCell sx={cellSx}>{candidate.mobile_number}</TableCell>
                     <TableCell sx={{ ...cellSx, color: candidate.last_message_date ? '#212121' : '#9e9e9e' }}>
@@ -185,6 +207,28 @@ export function CandidateTable({
                       <StatusBadge status={candidate.status} />
                     </TableCell>
                     <TableCell sx={cellSx}>{candidate.candidate_id}</TableCell>
+                    <TableCell sx={{ ...cellSx, textAlign: 'right', pr: 2 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.5 }}>
+                        <Tooltip title="View candidate details & journey">
+                          <IconButton
+                            size="small"
+                            onClick={() => onCandidateClick(candidate)}
+                            sx={{ color: '#64748b', '&:hover': { color: '#1976d2' } }}
+                          >
+                            <VisibilityIcon sx={{ fontSize: 18 }} />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Send message">
+                          <IconButton
+                            size="small"
+                            onClick={() => onSendMessageClick(candidate)}
+                            sx={{ color: '#64748b', '&:hover': { color: '#16a34a' } }}
+                          >
+                            <SendIcon sx={{ fontSize: 16 }} />
+                          </IconButton>
+                        </Tooltip>
+                      </Box>
+                    </TableCell>
                   </TableRow>
                 );
               })}

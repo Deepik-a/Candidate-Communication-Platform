@@ -1,7 +1,7 @@
 """Communications serializers."""
 
 from rest_framework import serializers
-from .models import Message
+from .models import Message, MessageStatusLog, MessageChannel
 
 
 class MessageSerializer(serializers.ModelSerializer):
@@ -10,12 +10,58 @@ class MessageSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Message
-        fields = ['id', 'candidate', 'candidate_name', 'candidate_code',
-                  'channel', 'content', 'status', 'sent_at', 'updated_at']
-        read_only_fields = ['id', 'sent_at', 'updated_at']
+        fields = [
+            'id',
+            'candidate',
+            'candidate_name',
+            'candidate_code',
+            'channel',
+            'content',
+            'status',
+            'provider',
+            'provider_message_id',
+            'error_message',
+            'sent_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'provider', 'provider_message_id', 'error_message', 'sent_at', 'updated_at']
 
 
 class SendMessageSerializer(serializers.Serializer):
     candidate_id = serializers.IntegerField()
-    channel = serializers.ChoiceField(choices=['sms', 'whatsapp', 'email'])
+    channel = serializers.ChoiceField(choices=MessageChannel.values, default=MessageChannel.SMS)
     content = serializers.CharField(min_length=1, max_length=2000)
+    provider = serializers.CharField(required=False, allow_blank=True, default='')
+
+
+class BulkSendMessageSerializer(serializers.Serializer):
+    candidate_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        min_length=1,
+    )
+    channel = serializers.ChoiceField(choices=MessageChannel.values, default=MessageChannel.SMS)
+    content = serializers.CharField(min_length=1, max_length=2000)
+    provider = serializers.CharField(required=False, allow_blank=True, default='')
+
+
+class CandidateMessageOutcomeSerializer(serializers.Serializer):
+    candidate_id = serializers.IntegerField()
+    candidate_name = serializers.CharField()
+    candidate_code = serializers.CharField()
+    success = serializers.BooleanField()
+    status = serializers.CharField()
+    message_id = serializers.IntegerField(allow_null=True)
+    provider = serializers.CharField()
+    provider_message_id = serializers.CharField(allow_blank=True)
+    error_message = serializers.CharField(allow_null=True)
+
+
+class BulkMessageResponseSerializer(serializers.Serializer):
+    total_requested = serializers.IntegerField()
+    successful_count = serializers.IntegerField()
+    failed_count = serializers.IntegerField()
+    outcomes = CandidateMessageOutcomeSerializer(many=True)
+
+
+class UpdateMessageStatusSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=MessageStatusLog.values)

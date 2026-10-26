@@ -24,6 +24,9 @@ class Message(models.Model):
     channel = models.CharField(max_length=20, choices=MessageChannel.choices, default=MessageChannel.SMS)
     content = models.TextField()
     status = models.CharField(max_length=20, choices=MessageStatusLog.choices, default=MessageStatusLog.PENDING)
+    provider = models.CharField(max_length=50, blank=True, default='')
+    provider_message_id = models.CharField(max_length=100, blank=True, default='')
+    error_message = models.TextField(blank=True, default='')
     sent_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
