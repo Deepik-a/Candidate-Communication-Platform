@@ -7,6 +7,7 @@ import {
   Typography,
   IconButton,
   CircularProgress,
+  Tooltip,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import CheckIcon from '@mui/icons-material/Check';
@@ -347,7 +348,15 @@ export function CandidateDetailModal({
                   >
                     {formatHistoryDateTime(msg.sent_at)}
                   </Typography>
-                  {renderHistoryStatusBadge(msg.status)}
+                  <Tooltip
+                    title={`Provider: ${msg.provider || 'dummy-service'} | Channel: ${(msg.channel || 'sms').toUpperCase()} | Ref ID: ${msg.provider_message_id || `MSG-${msg.id}`}`}
+                    arrow
+                    placement="left"
+                  >
+                    <Box component="span" sx={{ cursor: 'pointer' }}>
+                      {renderHistoryStatusBadge(msg.status)}
+                    </Box>
+                  </Tooltip>
                 </Box>
 
                 {/* Message Body Content */}
