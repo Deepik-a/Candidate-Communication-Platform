@@ -22,7 +22,6 @@ import {
   FormGroup,
   FormControlLabel,
   Paper,
-  Divider,
   Alert,
   Table,
   TableBody,
@@ -47,7 +46,7 @@ import MailOutlineIcon from '@mui/icons-material/MailOutline';
 
 import { communicationsApi } from '@/lib/api';
 import { useToast } from '@/context/ToastContext';
-import { Candidate, MessageChannel, CandidateMessageOutcome } from '@/types';
+import { Candidate, MessageChannel, CandidateMessageOutcome, MessageTemplate } from '@/types';
 import { StatusBadge } from './StatusBadge';
 
 interface BulkMessageModalProps {
@@ -89,6 +88,9 @@ export function BulkMessageModal({
   const [content, setContent] = useState('Your interview is scheduled for tomorrow.');
   const [contentError, setContentError] = useState('');
   const [requestError, setRequestError] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [templateId, setTemplateId] = useState<number | ''>('');
+  const [scheduledAt, setScheduledAt] = useState('');
 
   // Track which candidates remain checked inside modal
   const [activeCandidateIds, setActiveCandidateIds] = useState<number[]>([]);
@@ -106,6 +108,9 @@ export function BulkMessageModal({
       setContentError('');
       setRequestError(null);
       setResultFilter('all');
+      setTemplateId('');
+      setScheduledAt('');
+      communicationsApi.listTemplates().then(setTemplates).catch(() => setTemplates([]));
     }
   }, [open, selectedCandidates]);
 
@@ -148,11 +153,14 @@ export function BulkMessageModal({
     setRequestError(null);
 
     try {
+      const scheduledIso = scheduledAt ? new Date(scheduledAt).toISOString() : null;
       const resp = await communicationsApi.bulkSend({
         candidate_ids: activeCandidateIds,
         channel,
         content: content.trim(),
         provider,
+        scheduled_at: scheduledIso,
+        template_id: templateId || null,
       });
 
       setOutcomes(resp.outcomes);
@@ -346,6 +354,27 @@ export function BulkMessageModal({
                 </Select>
               </FormControl>
 
+              <FormControl fullWidth size="small" disabled={loading}>
+                <InputLabel>Template</InputLabel>
+                <Select
+                  value={templateId}
+                  label="Template"
+                  onChange={(e) => {
+                    const value = e.target.value as number | '';
+                    setTemplateId(value);
+                    const selected = templates.find((t) => t.id === value);
+                    if (selected) setContent(selected.content);
+                  }}
+                >
+                  <MenuItem value="">Write a custom message</MenuItem>
+                  {templates.map((template) => (
+                    <MenuItem key={template.id} value={template.id}>
+                      {template.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
               {/* Message Content */}
               <TextField
                 id="bulk-message-content"
@@ -359,7 +388,7 @@ export function BulkMessageModal({
                 error={!!contentError}
                 helperText={
                   contentError ||
-                  `${content.length}/2000 characters. Each candidate's delivery is tracked independently.`
+                  `${content.length}/2000 characters. Use {{full_name}} and other candidate fields. Each send is tracked independently.`
                 }
                 multiline
                 rows={4}
@@ -367,6 +396,17 @@ export function BulkMessageModal({
                 size="small"
                 placeholder="Type your bulk notification content here..."
                 inputProps={{ maxLength: 2000 }}
+              />
+
+              <TextField
+                size="small"
+                label="Schedule send (optional)"
+                type="datetime-local"
+                value={scheduledAt}
+                onChange={(e) => setScheduledAt(e.target.value)}
+                disabled={loading}
+                InputLabelProps={{ shrink: true }}
+                helperText="Leave empty to send immediately."
               />
             </>
           ) : (

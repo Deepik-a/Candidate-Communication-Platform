@@ -139,18 +139,51 @@ class DummyServiceCommunicationProvider(CommunicationProvider):
             )
 
         except requests.exceptions.RequestException as e:
-            # Standalone service might not be running or network unreachable
-            logger.info(f"Dummy service not reachable at {url}, defaulting to simulated delivery: {e}")
-            ref_id = f"sent_{uuid.uuid4().hex[:8]}"
-            return ProviderMessageResult(
-                success=True,
-                status=DeliveryStatus.SENT,
-                provider_name=self._name,
-                provider_message_id=ref_id,
-                failure_category="",
-                error_message=None,
-                technical_details=None,
+            analysis = CommunicationFailureTranslator.translate(
+                channel=channel,
+                recipient=recipient,
+                exception=e,
+                raw_error="Communication service unavailable: dummy provider is not reachable.",
             )
+            return ProviderMessageResult(
+                success=False,
+                status=DeliveryStatus.FAILED,
+                provider_name=self._name,
+                provider_message_id=f"unavailable_{uuid.uuid4().hex[:8]}",
+                failure_category=analysis.category.value,
+                error_message=analysis.recruiter_message,
+                technical_details=str(e),
+            )
+
+    def health(self) -> dict:
+        url = f"{self._base_url}/health"
+        try:
+            resp = requests.get(url, timeout=2)
+            if resp.status_code == 200:
+                data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                return {
+                    "id": "dummy",
+                    "name": "Dummy Communication Service",
+                    "status": "operational",
+                    "detail": data.get("status", "healthy"),
+                    "base_url": self._base_url,
+                }
+            return {
+                "id": "dummy",
+                "name": "Dummy Communication Service",
+                "status": "degraded",
+                "detail": f"Health endpoint returned HTTP {resp.status_code}.",
+                "base_url": self._base_url,
+            }
+        except requests.exceptions.RequestException as e:
+            return {
+                "id": "dummy",
+                "name": "Dummy Communication Service",
+                "status": "unavailable",
+                "detail": "The communication provider is unavailable. Messages cannot be sent until the service is running.",
+                "base_url": self._base_url,
+                "error": str(e),
+            }
 
     def check_status(self, provider_message_id: str) -> DeliveryStatus:
         url = f"{self._base_url}/messages/{provider_message_id}/status"
@@ -289,6 +322,15 @@ class WhatsAppCloudCommunicationProvider(CommunicationProvider):
     def check_status(self, provider_message_id: str) -> DeliveryStatus:
         return DeliveryStatus.DELIVERED
 
+    def health(self) -> dict:
+        mode = "live" if (self._api_token and self._phone_number_id) else "sandbox"
+        return {
+            "id": "whatsapp",
+            "name": "WhatsApp Cloud API / Sandbox",
+            "status": "operational",
+            "detail": f"WhatsApp provider ready ({mode} mode).",
+        }
+
 
 class MockCommunicationProvider(CommunicationProvider):
     """Local fallback / in-memory provider."""
@@ -335,6 +377,14 @@ class MockCommunicationProvider(CommunicationProvider):
     def check_status(self, provider_message_id: str) -> DeliveryStatus:
         return self._status_store.get(provider_message_id, DeliveryStatus.SENT)
 
+    def health(self) -> dict:
+        return {
+            "id": "mock",
+            "name": "Mock Gateway",
+            "status": "operational",
+            "detail": "In-memory mock provider is ready.",
+        }
+
 
 class ProviderFactory:
     """
@@ -371,3 +421,33 @@ class ProviderFactory:
     @classmethod
     def register_provider(cls, name: str, provider: CommunicationProvider) -> None:
         cls._providers[name] = provider
+
+    @classmethod
+    def catalog(cls) -> list:
+        """Recruiter-facing provider catalog used at send time."""
+        dummy = cls.get_provider(channel="sms", provider_name="dummy")
+        whatsapp = cls.get_provider(channel="whatsapp", provider_name="whatsapp")
+        mock = cls.get_provider(channel="sms", provider_name="mock")
+        return [
+            {
+                "id": "dummy",
+                "name": "Dummy Communication Service",
+                "description": "Standalone HTTP provider with delivery status callbacks.",
+                "channels": ["sms", "whatsapp", "email"],
+                "health": dummy.health(),
+            },
+            {
+                "id": "whatsapp",
+                "name": "WhatsApp Cloud API / Sandbox",
+                "description": "Meta Graph API or developer sandbox.",
+                "channels": ["whatsapp", "sms"],
+                "health": whatsapp.health(),
+            },
+            {
+                "id": "mock",
+                "name": "Mock Gateway",
+                "description": "Local in-memory provider for development and fallback.",
+                "channels": ["sms", "whatsapp", "email"],
+                "health": mock.health(),
+            },
+        ]

@@ -20,6 +20,29 @@ class FailureCategory(str, Enum):
     OTHER_PROVIDER_ERROR = "other_provider_error"
 
 
+RETRYABLE_FAILURE_CATEGORIES = frozenset({
+    FailureCategory.TEMPORARY_PROVIDER_FAILURE.value,
+    FailureCategory.RATE_LIMIT_EXCEEDED.value,
+    FailureCategory.DELIVERY_FAILURE.value,
+    FailureCategory.SERVICE_UNAVAILABLE.value,
+})
+
+PERMANENT_FAILURE_CATEGORIES = frozenset({
+    FailureCategory.INVALID_RECIPIENT.value,
+    FailureCategory.OTHER_PROVIDER_ERROR.value,
+})
+
+
+def is_retryable_failure(category: Optional[str]) -> bool:
+    """
+    Permanent failures (invalid recipient / provider policy) cannot be retried.
+    Transient and unknown categories can be retried.
+    """
+    if category in PERMANENT_FAILURE_CATEGORIES:
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class FailureAnalysis:
     """Structured humanized failure explanation for recruiters."""

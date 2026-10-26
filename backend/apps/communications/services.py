@@ -5,17 +5,22 @@ Following Single Responsibility Principle and Dependency Inversion Principle.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from datetime import datetime
+from typing import List, Optional
+from django.db.models import Count, Q
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from apps.candidates.infrastructure.models import Candidate, MessageStatus
-from .models import Message, MessageStatusLog
-from .domain import CommunicationProvider, DeliveryStatus, ProviderMessageResult
+from .models import Message, MessageStatusLog, MessageTemplate
+from .domain import CommunicationProvider, ProviderMessageResult
 from .providers import ProviderFactory
-from .failures import CommunicationFailureTranslator, FailureCategory
+from .failures import CommunicationFailureTranslator, FailureCategory, is_retryable_failure
+from .templates import render_message_content
 
 # Status Progression Precedence hierarchy:
-# pending (0) -> sent (1) -> delivered (2) -> read (3)
+# scheduled/pending (0) -> sent (1) -> delivered (2) -> read (3)
 STATUS_PRECEDENCE = {
+    MessageStatusLog.SCHEDULED: 0,
     MessageStatusLog.PENDING: 0,
     MessageStatusLog.SENT: 1,
     MessageStatusLog.DELIVERED: 2,
@@ -36,6 +41,7 @@ class CandidateMessageOutcome:
     provider_message_id: str
     failure_category: Optional[str]
     error_message: Optional[str]
+    is_retryable: bool = False
 
 
 @dataclass
@@ -75,6 +81,62 @@ class CommunicationService:
             return self._provider
         return ProviderFactory.get_provider(channel=channel, provider_name=provider_name)
 
+    def _parse_scheduled_at(self, scheduled_at) -> Optional[datetime]:
+        if scheduled_at is None or scheduled_at == "":
+            return None
+        if isinstance(scheduled_at, datetime):
+            when = scheduled_at
+        else:
+            when = parse_datetime(str(scheduled_at))
+            if when is None:
+                return None
+        if timezone.is_naive(when):
+            when = timezone.make_aware(when, timezone.get_current_timezone())
+        return when
+
+    def _resolve_content(self, content: str, template_id: Optional[int], candidate: Candidate) -> tuple:
+        template = None
+        source = content or ""
+        if template_id:
+            template = MessageTemplate.objects.filter(id=template_id).first()
+            if template and not source:
+                source = template.content
+        rendered = render_message_content(source, candidate)
+        return rendered, template
+
+    def _apply_candidate_status(self, candidate: Candidate, final_status: str) -> None:
+        if final_status == MessageStatusLog.READ:
+            candidate.last_message_date = timezone.now().date()
+            candidate.status = MessageStatus.READ
+        elif final_status == MessageStatusLog.DELIVERED:
+            candidate.last_message_date = timezone.now().date()
+            candidate.status = MessageStatus.DELIVERED
+        elif final_status == MessageStatusLog.FAILED:
+            candidate.last_message_date = timezone.now().date()
+            candidate.status = MessageStatus.FAILED
+        elif final_status == MessageStatusLog.SCHEDULED:
+            if candidate.status == MessageStatus.NA:
+                candidate.status = MessageStatus.SCHEDULED
+        else:
+            candidate.last_message_date = timezone.now().date()
+            candidate.status = MessageStatus.SENT
+        candidate.save(update_fields=['last_message_date', 'status'])
+
+    def _outcome_from_message(self, message: Message, success: bool) -> CandidateMessageOutcome:
+        return CandidateMessageOutcome(
+            candidate_id=message.candidate_id,
+            candidate_name=message.candidate.full_name,
+            candidate_code=message.candidate.candidate_id,
+            success=success,
+            status=message.status,
+            message_id=message.id,
+            provider=message.provider,
+            provider_message_id=message.provider_message_id,
+            failure_category=message.failure_category or None,
+            error_message=message.error_message or None,
+            is_retryable=message.status == MessageStatusLog.FAILED and is_retryable_failure(message.failure_category),
+        )
+
     def send_single_message(
         self,
         candidate_id: int,
@@ -82,6 +144,8 @@ class CommunicationService:
         content: str,
         provider_name: Optional[str] = None,
         forced_status: Optional[str] = None,
+        scheduled_at=None,
+        template_id: Optional[int] = None,
     ) -> CandidateMessageOutcome:
         """
         Sends a message to an individual candidate through the provider.
@@ -101,7 +165,25 @@ class CommunicationService:
                 provider_message_id="",
                 failure_category=FailureCategory.INVALID_RECIPIENT.value,
                 error_message=f"Candidate with id {candidate_id} does not exist in the database.",
+                is_retryable=False,
             )
+
+        rendered_content, template = self._resolve_content(content, template_id, candidate)
+        when = self._parse_scheduled_at(scheduled_at)
+
+        if when and when > timezone.now():
+            message = Message.objects.create(
+                candidate=candidate,
+                channel=channel,
+                content=rendered_content,
+                status=MessageStatusLog.SCHEDULED,
+                provider=provider_name or "",
+                provider_message_id="",
+                scheduled_at=when,
+                template=template,
+            )
+            self._apply_candidate_status(candidate, MessageStatusLog.SCHEDULED)
+            return self._outcome_from_message(message, success=True)
 
         recipient = (candidate.email if channel == 'email' and candidate.email else candidate.mobile_number) or ""
 
@@ -115,36 +197,46 @@ class CommunicationService:
             message = Message.objects.create(
                 candidate=candidate,
                 channel=channel,
-                content=content,
+                content=rendered_content,
                 status=MessageStatusLog.FAILED,
                 provider=provider_name or "validation-guard",
                 provider_message_id="",
                 failure_category=analysis.category.value,
                 error_message=analysis.recruiter_message,
+                template=template,
             )
-            candidate.last_message_date = timezone.now().date()
-            candidate.status = MessageStatus.FAILED
-            candidate.save(update_fields=['last_message_date', 'status'])
-
-            return CandidateMessageOutcome(
-                candidate_id=candidate.id,
-                candidate_name=candidate.full_name,
-                candidate_code=candidate.candidate_id,
-                success=False,
-                status=MessageStatusLog.FAILED,
-                message_id=message.id,
-                provider=message.provider,
-                provider_message_id="",
-                failure_category=analysis.category.value,
-                error_message=analysis.recruiter_message,
-            )
+            self._apply_candidate_status(candidate, MessageStatusLog.FAILED)
+            return self._outcome_from_message(message, success=False)
 
         provider = self._resolve_provider(channel, provider_name=provider_name)
+        provider_health = provider.health()
+        if provider_health.get("status") == "unavailable":
+            analysis = CommunicationFailureTranslator.translate(
+                channel=channel,
+                recipient=recipient,
+                raw_error="service unavailable: communication provider is not reachable",
+            )
+            message = Message.objects.create(
+                candidate=candidate,
+                channel=channel,
+                content=rendered_content,
+                status=MessageStatusLog.FAILED,
+                provider=provider.provider_name,
+                provider_message_id="",
+                failure_category=analysis.category.value,
+                error_message=(
+                    "Communication service unavailable. The selected provider is not running, "
+                    "so this message was not sent. Please start the provider or choose another method, then retry."
+                ),
+                template=template,
+            )
+            self._apply_candidate_status(candidate, MessageStatusLog.FAILED)
+            return self._outcome_from_message(message, success=False)
 
         # Dispatch via provider
         provider_result: ProviderMessageResult = provider.send(
             recipient=recipient,
-            content=content,
+            content=rendered_content,
             channel=channel,
         )
 
@@ -154,37 +246,20 @@ class CommunicationService:
         message = Message.objects.create(
             candidate=candidate,
             channel=channel,
-            content=content,
+            content=rendered_content,
             status=final_status,
             provider=provider_result.provider_name,
             provider_message_id=provider_result.provider_message_id,
             failure_category=provider_result.failure_category or '',
             error_message=provider_result.error_message or '',
+            template=template,
         )
 
-        # Update candidate state
-        candidate.last_message_date = timezone.now().date()
-        if final_status == MessageStatusLog.READ:
-            candidate.status = MessageStatus.READ
-        elif final_status == MessageStatusLog.DELIVERED:
-            candidate.status = MessageStatus.DELIVERED
-        elif final_status == MessageStatusLog.FAILED:
-            candidate.status = MessageStatus.FAILED
-        else:
-            candidate.status = MessageStatus.SENT
-        candidate.save(update_fields=['last_message_date', 'status'])
+        self._apply_candidate_status(candidate, final_status)
 
-        return CandidateMessageOutcome(
-            candidate_id=candidate.id,
-            candidate_name=candidate.full_name,
-            candidate_code=candidate.candidate_id,
+        return self._outcome_from_message(
+            message,
             success=provider_result.success and final_status != MessageStatusLog.FAILED,
-            status=final_status,
-            message_id=message.id,
-            provider=provider_result.provider_name,
-            provider_message_id=provider_result.provider_message_id,
-            failure_category=provider_result.failure_category or None,
-            error_message=provider_result.error_message,
         )
 
     def send_bulk_messages(
@@ -193,6 +268,8 @@ class CommunicationService:
         channel: str,
         content: str,
         provider_name: Optional[str] = None,
+        scheduled_at=None,
+        template_id: Optional[int] = None,
     ) -> BulkMessageResult:
         """
         Sends the same message to multiple candidates.
@@ -212,6 +289,8 @@ class CommunicationService:
                     channel=channel,
                     content=content,
                     provider_name=provider_name,
+                    scheduled_at=scheduled_at,
+                    template_id=template_id,
                 )
                 outcomes.append(outcome)
                 if outcome.success:
@@ -236,6 +315,7 @@ class CommunicationService:
                         provider_message_id="",
                         failure_category=analysis.category.value,
                         error_message=analysis.recruiter_message,
+                        is_retryable=analysis.is_retryable,
                     )
                 )
 
@@ -371,3 +451,173 @@ class CommunicationService:
             was_duplicate=False,
             detail=f"Successfully updated message #{message.id} status to '{target_status}'.",
         )
+
+    def dispatch_due_scheduled_messages(self) -> List[CandidateMessageOutcome]:
+        """Send every scheduled message whose send time has arrived."""
+        due = (
+            Message.objects.select_related("candidate", "template")
+            .filter(status=MessageStatusLog.SCHEDULED, scheduled_at__lte=timezone.now())
+            .order_by("scheduled_at", "id")
+        )
+        outcomes: List[CandidateMessageOutcome] = []
+        for message in due:
+            outcomes.append(self._dispatch_existing_message(message))
+        return outcomes
+
+    def _dispatch_existing_message(self, message: Message, increment_retry: bool = False) -> CandidateMessageOutcome:
+        candidate = message.candidate
+        channel = message.channel
+        recipient = (candidate.email if channel == "email" and candidate.email else candidate.mobile_number) or ""
+        provider_name = message.provider or None
+
+        if not recipient or (channel in ("sms", "whatsapp") and not CommunicationFailureTranslator._is_valid_phone(recipient)):
+            analysis = CommunicationFailureTranslator.translate(
+                channel=channel,
+                recipient=recipient,
+                raw_error="Missing or invalid recipient contact details.",
+            )
+            message.status = MessageStatusLog.FAILED
+            message.failure_category = analysis.category.value
+            message.error_message = analysis.recruiter_message
+            if increment_retry:
+                message.retry_count += 1
+            message.save()
+            self._apply_candidate_status(candidate, MessageStatusLog.FAILED)
+            return self._outcome_from_message(message, success=False)
+
+        provider = self._resolve_provider(channel, provider_name=provider_name)
+        health = provider.health()
+        if health.get("status") == "unavailable":
+            analysis = CommunicationFailureTranslator.translate(
+                channel=channel,
+                recipient=recipient,
+                raw_error="service unavailable: communication provider is not reachable",
+            )
+            message.status = MessageStatusLog.FAILED
+            message.provider = provider.provider_name
+            message.failure_category = analysis.category.value
+            message.error_message = (
+                "Communication service unavailable. The provider is not running, so this message was not sent."
+            )
+            if increment_retry:
+                message.retry_count += 1
+            message.save()
+            self._apply_candidate_status(candidate, MessageStatusLog.FAILED)
+            return self._outcome_from_message(message, success=False)
+
+        provider_result = provider.send(
+            recipient=recipient,
+            content=message.content,
+            channel=channel,
+        )
+        message.status = provider_result.status.value
+        message.provider = provider_result.provider_name
+        message.provider_message_id = provider_result.provider_message_id
+        message.failure_category = provider_result.failure_category or ""
+        message.error_message = provider_result.error_message or ""
+        message.sent_at = timezone.now()
+        if increment_retry:
+            message.retry_count += 1
+        message.save()
+        self._apply_candidate_status(candidate, message.status)
+        return self._outcome_from_message(
+            message,
+            success=provider_result.success and message.status != MessageStatusLog.FAILED,
+        )
+
+    def retry_failed_message(self, message_id: int) -> CandidateMessageOutcome:
+        try:
+            message = Message.objects.select_related("candidate").get(id=message_id)
+        except Message.DoesNotExist:
+            return CandidateMessageOutcome(
+                candidate_id=0,
+                candidate_name="Unknown",
+                candidate_code="",
+                success=False,
+                status=MessageStatusLog.FAILED,
+                message_id=None,
+                provider="none",
+                provider_message_id="",
+                failure_category="",
+                error_message=f"Message {message_id} was not found.",
+                is_retryable=False,
+            )
+
+        if message.status != MessageStatusLog.FAILED:
+            return CandidateMessageOutcome(
+                candidate_id=message.candidate_id,
+                candidate_name=message.candidate.full_name,
+                candidate_code=message.candidate.candidate_id,
+                success=False,
+                status=message.status,
+                message_id=message.id,
+                provider=message.provider,
+                provider_message_id=message.provider_message_id,
+                failure_category=message.failure_category or None,
+                error_message="Only failed messages can be retried.",
+                is_retryable=False,
+            )
+
+        if not is_retryable_failure(message.failure_category):
+            return CandidateMessageOutcome(
+                candidate_id=message.candidate_id,
+                candidate_name=message.candidate.full_name,
+                candidate_code=message.candidate.candidate_id,
+                success=False,
+                status=message.status,
+                message_id=message.id,
+                provider=message.provider,
+                provider_message_id=message.provider_message_id,
+                failure_category=message.failure_category or None,
+                error_message=(
+                    "This failure is permanent and cannot be retried. "
+                    "Update the candidate's contact details or message content, then send a new message."
+                ),
+                is_retryable=False,
+            )
+
+        return self._dispatch_existing_message(message, increment_retry=True)
+
+    def get_health_snapshot(self) -> dict:
+        stats = Message.objects.aggregate(
+            messages_sent=Count("id", filter=Q(status__in=[
+                MessageStatusLog.SENT, MessageStatusLog.DELIVERED, MessageStatusLog.READ,
+            ])),
+            messages_delivered=Count("id", filter=Q(status__in=[
+                MessageStatusLog.DELIVERED, MessageStatusLog.READ,
+            ])),
+            messages_failed=Count("id", filter=Q(status=MessageStatusLog.FAILED)),
+            messages_scheduled=Count("id", filter=Q(status=MessageStatusLog.SCHEDULED)),
+            messages_read=Count("id", filter=Q(status=MessageStatusLog.READ)),
+        )
+        providers = ProviderFactory.catalog()
+        statuses = [p.get("health", {}).get("status") for p in providers]
+        if any(s == "unavailable" for s in statuses):
+            overall = "unavailable" if statuses.count("unavailable") == len(statuses) else "degraded"
+        elif any(s == "degraded" for s in statuses):
+            overall = "degraded"
+        else:
+            overall = "operational"
+
+        unavailable = [p for p in providers if p.get("health", {}).get("status") == "unavailable"]
+        recruiter_notice = ""
+        if unavailable:
+            names = ", ".join(p["name"] for p in unavailable)
+            recruiter_notice = (
+                f"Communication service unavailable: {names}. "
+                "Messages cannot be sent through the affected provider until it is running again."
+            )
+
+        return {
+            "status": overall,
+            "label": "Operational" if overall == "operational" else (
+                "Degraded" if overall == "degraded" else "Unavailable"
+            ),
+            "recruiter_notice": recruiter_notice,
+            "messages_sent": stats["messages_sent"],
+            "messages_delivered": stats["messages_delivered"],
+            "messages_failed": stats["messages_failed"],
+            "messages_scheduled": stats["messages_scheduled"],
+            "messages_read": stats["messages_read"],
+            "providers": providers,
+        }

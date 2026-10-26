@@ -94,6 +94,29 @@ export function StatusBadge({ status }: StatusBadgeProps) {
     );
   }
 
+  if (norm === 'scheduled' || norm === 'pending') {
+    return (
+      <Box
+        component="span"
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          backgroundColor: '#fff8e1',
+          color: '#f57c00',
+          px: 1.5,
+          py: 0.25,
+          borderRadius: '16px',
+          fontSize: '0.75rem',
+          fontWeight: 500,
+          lineHeight: 1.5,
+          border: '1px solid #ffe082',
+        }}
+      >
+        <span>Scheduled</span>
+      </Box>
+    );
+  }
+
   if (norm === 'delivered') {
     return (
       <Box

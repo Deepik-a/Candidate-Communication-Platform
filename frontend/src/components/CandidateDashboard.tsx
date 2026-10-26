@@ -19,8 +19,8 @@ import SearchIcon from '@mui/icons-material/Search';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 
-import { candidatesApi } from '@/lib/api';
-import { Candidate } from '@/types';
+import { candidatesApi, communicationsApi } from '@/lib/api';
+import { Candidate, CommunicationHealth } from '@/types';
 import { useToast } from '@/context/ToastContext';
 import { CandidateTable } from '@/components/CandidateTable';
 import { AddCandidateModal } from '@/components/AddCandidateModal';
@@ -28,6 +28,8 @@ import { SendMessageModal } from '@/components/SendMessageModal';
 import { BulkMessageModal } from '@/components/BulkMessageModal';
 import { CandidateDetailModal } from '@/components/CandidateDetailModal';
 import { DeleteConfirmDialog } from '@/components/DeleteConfirmDialog';
+import { ServiceHealthBar } from '@/components/ServiceHealthBar';
+import { TemplatesDrawer } from '@/components/TemplatesDrawer';
 
 type SortField = 'full_name' | 'mobile_number' | 'last_message_date' | 'status' | 'candidate_id';
 type SortOrder = 'asc' | 'desc';
@@ -69,6 +71,8 @@ export default function CandidateDashboard() {
   const [activeCandidate, setActiveCandidate] = useState<Candidate | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [health, setHealth] = useState<CommunicationHealth | null>(null);
 
   // Fetch candidates
   const fetchCandidates = useCallback(async () => {
@@ -93,6 +97,21 @@ export default function CandidateDashboard() {
   useEffect(() => {
     fetchCandidates();
   }, [fetchCandidates]);
+
+  const refreshHealth = useCallback(async () => {
+    try {
+      await communicationsApi.dispatchScheduled();
+      setHealth(await communicationsApi.health());
+    } catch {
+      setHealth(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshHealth();
+    const timer = setInterval(refreshHealth, 15000);
+    return () => clearInterval(timer);
+  }, [refreshHealth]);
 
   // Debounce search
   useEffect(() => {
@@ -241,6 +260,24 @@ export default function CandidateDashboard() {
 
           {/* Action Buttons matching Screenshots 1 & 2 */}
           <Stack direction="row" alignItems="center" spacing={1.5}>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => setTemplatesOpen(true)}
+              sx={{
+                borderColor: '#90caf9',
+                color: '#0288d1',
+                fontWeight: 600,
+                fontSize: '0.78rem',
+                textTransform: 'uppercase',
+                height: 36,
+                px: 2,
+                borderRadius: '4px',
+              }}
+            >
+              Templates
+            </Button>
+
             {/* + ADD CANDIDATE */}
             <Button
               id="add-candidate-btn"
@@ -358,6 +395,8 @@ export default function CandidateDashboard() {
             />
           </Stack>
         </Stack>
+
+        <ServiceHealthBar health={health} />
 
         {/* Failed Request Banner */}
         {fetchError && (
@@ -507,6 +546,7 @@ export default function CandidateDashboard() {
         }}
         onSuccess={() => {
           fetchCandidates();
+          refreshHealth();
           setSelected([]);
         }}
         candidate={activeCandidate}
@@ -532,6 +572,8 @@ export default function CandidateDashboard() {
           setSendModalOpen(true);
         }}
       />
+
+      <TemplatesDrawer open={templatesOpen} onClose={() => setTemplatesOpen(false)} />
 
       <DeleteConfirmDialog
         open={deleteDialogOpen}

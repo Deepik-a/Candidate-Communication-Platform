@@ -8,10 +8,13 @@ import {
   IconButton,
   CircularProgress,
   Tooltip,
+  Button,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import CheckIcon from '@mui/icons-material/Check';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
+import ReplayIcon from '@mui/icons-material/Replay';
+import { useToast } from '@/context/ToastContext';
 
 import { Candidate, Message } from '@/types';
 import { communicationsApi } from '@/lib/api';
@@ -96,6 +99,29 @@ function renderHistoryStatusBadge(status: string) {
     );
   }
 
+  if (norm === 'scheduled' || norm === 'pending') {
+    return (
+      <Box
+        component="span"
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          backgroundColor: '#fff8e1',
+          color: '#f57c00',
+          px: 1.5,
+          py: 0.25,
+          borderRadius: '16px',
+          fontSize: '0.72rem',
+          fontWeight: 500,
+          border: '1px solid #ffe082',
+          lineHeight: 1.4,
+        }}
+      >
+        <span>Scheduled</span>
+      </Box>
+    );
+  }
+
   if (norm === 'failed') {
     return (
       <Box
@@ -149,8 +175,10 @@ export function CandidateDetailModal({
   onClose,
   candidate,
 }: CandidateDetailModalProps) {
+  const { showToast } = useToast();
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [retryingId, setRetryingId] = useState<number | null>(null);
 
   const fetchHistory = useCallback(async () => {
     if (!candidate) return;
@@ -178,6 +206,28 @@ export function CandidateDetailModal({
       setMessages([]);
     }
   }, [open, candidate, fetchHistory]);
+
+  const handleRetry = async (message: Message) => {
+    setRetryingId(message.id);
+    try {
+      const outcome = await communicationsApi.retry(message.id);
+      if (outcome.success) {
+        showToast('Message retried successfully.', 'success');
+      } else {
+        showToast(outcome.error_message || 'Retry failed.', 'error');
+      }
+      await fetchHistory();
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { error_message?: string; detail?: string } } })?.response?.data
+          ?.error_message ||
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'This message cannot be retried.';
+      showToast(detail, 'error');
+    } finally {
+      setRetryingId(null);
+    }
+  };
 
   if (!candidate) return null;
 
@@ -328,7 +378,7 @@ export function CandidateDetailModal({
         ) : (
           /* ── Messages List matching Screenshot 2 (Recent to Oldest) ─────── */
           <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-            {messages.map((msg, index) => (
+            {messages.map((msg) => (
               <Box key={msg.id} sx={{ mb: 2 }}>
                 {/* Header row: Date | Time on left, Status Badge on right */}
                 <Box
@@ -346,7 +396,9 @@ export function CandidateDetailModal({
                       fontWeight: 400,
                     }}
                   >
-                    {formatHistoryDateTime(msg.sent_at)}
+                    {msg.status === 'scheduled' && msg.scheduled_at
+                      ? `Scheduled ${formatHistoryDateTime(msg.scheduled_at)}`
+                      : formatHistoryDateTime(msg.sent_at)}
                   </Typography>
                   <Tooltip
                     title={`Provider: ${msg.provider || 'dummy-service'} | Channel: ${(msg.channel || 'sms').toUpperCase()} | Ref ID: ${msg.provider_message_id || `MSG-${msg.id}`}`}
@@ -371,6 +423,23 @@ export function CandidateDetailModal({
                 >
                   {msg.content}
                 </Typography>
+                {msg.status === 'failed' && msg.error_message && (
+                  <Typography sx={{ fontSize: '0.75rem', color: '#d32f2f', mt: 0.75 }}>
+                    {msg.error_message}
+                    {!msg.is_retryable ? ' This failure is permanent and cannot be retried.' : ''}
+                  </Typography>
+                )}
+                {msg.status === 'failed' && msg.is_retryable && (
+                  <Button
+                    size="small"
+                    startIcon={retryingId === msg.id ? <CircularProgress size={12} /> : <ReplayIcon sx={{ fontSize: 14 }} />}
+                    onClick={() => handleRetry(msg)}
+                    disabled={retryingId === msg.id}
+                    sx={{ mt: 0.75, textTransform: 'none', fontSize: '0.75rem' }}
+                  >
+                    Retry message
+                  </Button>
+                )}
 
                 {/* Divider below each message item */}
                 <Box sx={{ borderBottom: '1px solid #eeeeee', mt: 2 }} />
