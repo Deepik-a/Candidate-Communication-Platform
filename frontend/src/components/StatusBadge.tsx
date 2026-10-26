@@ -1,96 +1,127 @@
 'use client';
 
 import React from 'react';
-import { Chip } from '@mui/material';
-import CheckCircleOutlinedIcon from '@mui/icons-material/CheckCircleOutlined';
-import DoneAllIcon from '@mui/icons-material/DoneAll';
-import ErrorOutlinedIcon from '@mui/icons-material/ErrorOutlined';
-import SendOutlinedIcon from '@mui/icons-material/SendOutlined';
+import { Box } from '@mui/material';
+import CheckIcon from '@mui/icons-material/Check';
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import { MessageStatus } from '@/types';
 
 interface StatusBadgeProps {
-  status: MessageStatus;
+  status: MessageStatus | string;
 }
 
-const statusConfig: Record<MessageStatus, {
-  label: string;
-  color: 'success' | 'error' | 'info' | 'default';
-  icon?: React.ReactElement;
-}> = {
-  read: {
-    label: 'read',
-    color: 'success',
-    icon: <CheckCircleOutlinedIcon sx={{ fontSize: '14px !important' }} />,
-  },
-  delivered: {
-    label: 'Delivered',
-    color: 'info',
-    icon: <DoneAllIcon sx={{ fontSize: '14px !important' }} />,
-  },
-  sent: {
-    label: 'Sent',
-    color: 'info',
-    icon: <SendOutlinedIcon sx={{ fontSize: '13px !important' }} />,
-  },
-  failed: {
-    label: 'Failed',
-    color: 'error',
-    icon: <ErrorOutlinedIcon sx={{ fontSize: '14px !important' }} />,
-  },
-  NA: {
-    label: 'NA',
-    color: 'default',
-  },
-};
-
 export function StatusBadge({ status }: StatusBadgeProps) {
-  const config = statusConfig[status] ?? statusConfig['NA'];
+  const norm = (status || 'NA').toLowerCase();
 
-  if (status === 'NA') {
+  if (norm === 'na' || !status) {
     return (
-      <span style={{ color: '#9e9e9e', fontSize: '0.875rem' }}>NA</span>
+      <span style={{ color: '#757575', fontSize: '0.85rem', fontWeight: 400 }}>
+        NA
+      </span>
+    );
+  }
+
+  if (norm === 'read') {
+    return (
+      <Box
+        component="span"
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 0.5,
+          backgroundColor: '#e8f5e9',
+          color: '#2e7d32',
+          px: 1.25,
+          py: 0.25,
+          borderRadius: '16px',
+          fontSize: '0.75rem',
+          fontWeight: 500,
+          lineHeight: 1.5,
+          border: '1px solid #c8e6c9',
+        }}
+      >
+        <CheckIcon sx={{ fontSize: 13, color: '#2e7d32' }} />
+        <span>read</span>
+      </Box>
+    );
+  }
+
+  if (norm === 'failed') {
+    return (
+      <Box
+        component="span"
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 0.5,
+          backgroundColor: '#ffebee',
+          color: '#d32f2f',
+          px: 1.25,
+          py: 0.25,
+          borderRadius: '16px',
+          fontSize: '0.75rem',
+          fontWeight: 500,
+          lineHeight: 1.5,
+          border: '1px solid #ffcdd2',
+        }}
+      >
+        <ErrorOutlineIcon sx={{ fontSize: 14, color: '#d32f2f' }} />
+        <span>Failed</span>
+      </Box>
+    );
+  }
+
+  if (norm === 'sent') {
+    return (
+      <Box
+        component="span"
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          backgroundColor: '#e1f5fe',
+          color: '#0288d1',
+          px: 1.5,
+          py: 0.25,
+          borderRadius: '16px',
+          fontSize: '0.75rem',
+          fontWeight: 500,
+          lineHeight: 1.5,
+          border: '1px solid #b3e5fc',
+        }}
+      >
+        <span>Sent</span>
+      </Box>
+    );
+  }
+
+  if (norm === 'delivered') {
+    return (
+      <Box
+        component="span"
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 0.5,
+          backgroundColor: '#e0f2fe',
+          color: '#0284c7',
+          px: 1.25,
+          py: 0.25,
+          borderRadius: '16px',
+          fontSize: '0.75rem',
+          fontWeight: 500,
+          lineHeight: 1.5,
+          border: '1px solid #bae6fd',
+        }}
+      >
+        <CheckIcon sx={{ fontSize: 13, color: '#0284c7' }} />
+        <span>Delivered</span>
+      </Box>
     );
   }
 
   return (
-    <Chip
-      label={config.label}
-      color={config.color}
-      icon={config.icon}
-      size="small"
-      variant="outlined"
-      sx={{
-        fontSize: '0.75rem',
-        fontWeight: 500,
-        height: 26,
-        borderRadius: '6px',
-        '& .MuiChip-label': { px: 1 },
-        '& .MuiChip-icon': { ml: 0.5 },
-        ...(status === 'read' && {
-          borderColor: '#4caf50',
-          color: '#4caf50',
-          backgroundColor: '#f1f8e9',
-          '& .MuiChip-icon': { color: '#4caf50', ml: 0.5 },
-        }),
-        ...(status === 'delivered' && {
-          borderColor: '#0288d1',
-          color: '#0288d1',
-          backgroundColor: '#e1f5fe',
-          '& .MuiChip-icon': { color: '#0288d1', ml: 0.5 },
-        }),
-        ...(status === 'failed' && {
-          borderColor: '#f44336',
-          color: '#f44336',
-          backgroundColor: '#ffebee',
-          '& .MuiChip-icon': { color: '#f44336', ml: 0.5 },
-        }),
-        ...(status === 'sent' && {
-          borderColor: '#29b6f6',
-          color: '#0288d1',
-          backgroundColor: '#f0f9ff',
-          '& .MuiChip-icon': { color: '#0288d1', ml: 0.5 },
-        }),
-      }}
-    />
+    <span style={{ color: '#757575', fontSize: '0.85rem' }}>
+      {status}
+    </span>
   );
 }

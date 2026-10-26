@@ -26,13 +26,14 @@ class Message(models.Model):
     status = models.CharField(max_length=20, choices=MessageStatusLog.choices, default=MessageStatusLog.PENDING)
     provider = models.CharField(max_length=50, blank=True, default='')
     provider_message_id = models.CharField(max_length=100, blank=True, default='')
+    failure_category = models.CharField(max_length=50, blank=True, default='')
     error_message = models.TextField(blank=True, default='')
     sent_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'messages'
-        ordering = ['-sent_at']
+        ordering = ['-sent_at', '-id']
         verbose_name = 'Message'
         verbose_name_plural = 'Messages'
 

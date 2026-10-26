@@ -30,7 +30,9 @@ class ProviderMessageResult:
     status: DeliveryStatus
     provider_name: str
     provider_message_id: str
+    failure_category: Optional[str] = None
     error_message: Optional[str] = None
+    technical_details: Optional[str] = None
 
 
 class CommunicationProvider(ABC):

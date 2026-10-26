@@ -42,7 +42,7 @@ class DjangoCandidateRepository(CandidateRepositoryInterface):
         page: int = 1,
         page_size: int = 10,
     ) -> Tuple[List[CandidateEntity], int]:
-        qs = Candidate.objects.all()
+        qs = Candidate.objects.all().order_by('-created_at')
         if search:
             qs = qs.filter(
                 Q(full_name__icontains=search) |

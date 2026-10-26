@@ -62,6 +62,7 @@ export interface CandidateMessageOutcome {
   message_id: number | null;
   provider: string;
   provider_message_id: string;
+  failure_category?: string | null;
   error_message: string | null;
 }
 
@@ -77,11 +78,14 @@ export interface Message {
   candidate: number;
   candidate_name: string;
   candidate_code: string;
+  candidate_phone?: string;
+  candidate_email?: string;
   channel: MessageChannel;
   content: string;
   status: string;
   provider?: string;
   provider_message_id?: string;
+  failure_category?: string;
   error_message?: string;
   sent_at: string;
   updated_at: string;

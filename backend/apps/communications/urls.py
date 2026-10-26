@@ -6,6 +6,8 @@ from .views import (
     BulkSendMessageView,
     CandidateMessagesView,
     MessageDetailStatusView,
+    MessageSyncStatusView,
+    ProviderWebhookView,
 )
 
 urlpatterns = [
@@ -13,4 +15,6 @@ urlpatterns = [
     path('communications/bulk-send/', BulkSendMessageView.as_view(), name='bulk-send-message'),
     path('communications/candidate/<int:candidate_id>/', CandidateMessagesView.as_view(), name='candidate-messages'),
     path('communications/messages/<int:message_id>/', MessageDetailStatusView.as_view(), name='message-detail-status'),
+    path('communications/messages/<int:message_id>/sync/', MessageSyncStatusView.as_view(), name='message-sync-status'),
+    path('communications/webhook/', ProviderWebhookView.as_view(), name='provider-webhook'),
 ]
