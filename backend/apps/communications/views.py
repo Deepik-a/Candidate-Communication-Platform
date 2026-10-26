@@ -17,8 +17,10 @@ from rest_framework import status
 from drf_spectacular.utils import extend_schema
 
 from apps.candidates.infrastructure.models import Candidate
-from .models import Message
+from .models import Message, MessageTemplate
 from .services import CommunicationService
+from .providers import ProviderFactory
+from .templates import render_message_content, TEMPLATE_PLACEHOLDERS
 from .serializers import (
     MessageSerializer,
     SendMessageSerializer,
@@ -27,6 +29,8 @@ from .serializers import (
     CandidateMessageOutcomeSerializer,
     UpdateMessageStatusSerializer,
     WebhookStatusUpdateSerializer,
+    MessageTemplateSerializer,
+    TemplatePreviewSerializer,
 )
 
 
@@ -56,8 +60,10 @@ class SendMessageView(APIView):
         outcome = service.send_single_message(
             candidate_id=serializer.validated_data['candidate_id'],
             channel=serializer.validated_data['channel'],
-            content=serializer.validated_data['content'],
+            content=serializer.validated_data.get('content') or '',
             provider_name=serializer.validated_data.get('provider') or None,
+            scheduled_at=serializer.validated_data.get('scheduled_at'),
+            template_id=serializer.validated_data.get('template_id'),
         )
 
         resp_status = status.HTTP_201_CREATED if outcome.success else status.HTTP_200_OK
@@ -86,8 +92,10 @@ class BulkSendMessageView(APIView):
         bulk_result = service.send_bulk_messages(
             candidate_ids=serializer.validated_data['candidate_ids'],
             channel=serializer.validated_data['channel'],
-            content=serializer.validated_data['content'],
+            content=serializer.validated_data.get('content') or '',
             provider_name=serializer.validated_data.get('provider') or None,
+            scheduled_at=serializer.validated_data.get('scheduled_at'),
+            template_id=serializer.validated_data.get('template_id'),
         )
 
         return Response(BulkMessageResponseSerializer(bulk_result).data, status=status.HTTP_200_OK)
@@ -297,3 +305,142 @@ class ProviderWebhookView(APIView):
         if hub_mode == "subscribe" and hub_challenge:
             return Response(int(hub_challenge), status=status.HTTP_200_OK)
         return Response({"status": "active", "service": "communication-webhook-listener"}, status=status.HTTP_200_OK)
+
+
+class MessageRetryView(APIView):
+    """POST /api/v1/communications/messages/<id>/retry/ — retry a retryable failed message."""
+
+    @extend_schema(responses={200: CandidateMessageOutcomeSerializer}, summary='Retry a failed message')
+    def post(self, request, message_id):
+        service = get_communication_service()
+        outcome = service.retry_failed_message(message_id)
+        if outcome.message_id is None:
+            return Response({'detail': outcome.error_message}, status=status.HTTP_404_NOT_FOUND)
+        http_status = status.HTTP_200_OK
+        if not outcome.success and not outcome.is_retryable:
+            http_status = status.HTTP_400_BAD_REQUEST
+        return Response(CandidateMessageOutcomeSerializer(outcome).data, status=http_status)
+
+
+class ProviderCatalogView(APIView):
+    """GET /api/v1/communications/providers/ — available communication methods."""
+
+    @extend_schema(summary='List communication providers')
+    def get(self, request):
+        return Response({'results': ProviderFactory.catalog()})
+
+
+class CommunicationHealthView(APIView):
+    """GET /api/v1/communications/health/ — provider health and delivery counters."""
+
+    @extend_schema(summary='Communication service health')
+    def get(self, request):
+        service = get_communication_service()
+        return Response(service.get_health_snapshot())
+
+
+class DispatchScheduledView(APIView):
+    """POST /api/v1/communications/dispatch-scheduled/ — send due scheduled messages."""
+
+    @extend_schema(summary='Dispatch due scheduled messages')
+    def post(self, request):
+        service = get_communication_service()
+        outcomes = service.dispatch_due_scheduled_messages()
+        return Response({
+            'dispatched': len(outcomes),
+            'outcomes': CandidateMessageOutcomeSerializer(outcomes, many=True).data,
+        })
+
+
+class MessageTemplateListCreateView(APIView):
+    """GET/POST /api/v1/communications/templates/"""
+
+    @extend_schema(responses={200: MessageTemplateSerializer(many=True)}, summary='List message templates')
+    def get(self, request):
+        templates = MessageTemplate.objects.all()
+        if not templates.exists():
+            MessageTemplate.objects.bulk_create([
+                MessageTemplate(
+                    name='Interview invitation',
+                    content='Hello {{full_name}}, your interview is scheduled. We will contact you at {{mobile_number}}.',
+                    channel='sms',
+                ),
+                MessageTemplate(
+                    name='Application received',
+                    content='Hi {{full_name}} ({{candidate_id}}), we received your application. We will follow up at {{email}}.',
+                    channel='email',
+                ),
+            ])
+            templates = MessageTemplate.objects.all()
+        return Response(MessageTemplateSerializer(templates, many=True).data)
+
+    @extend_schema(request=MessageTemplateSerializer, responses={201: MessageTemplateSerializer}, summary='Create message template')
+    def post(self, request):
+        serializer = MessageTemplateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class MessageTemplateDetailView(APIView):
+    """GET/PATCH/DELETE /api/v1/communications/templates/<id>/"""
+
+    def _get(self, template_id):
+        try:
+            return MessageTemplate.objects.get(id=template_id)
+        except MessageTemplate.DoesNotExist:
+            return None
+
+    @extend_schema(responses={200: MessageTemplateSerializer})
+    def get(self, request, template_id):
+        template = self._get(template_id)
+        if not template:
+            return Response({'detail': 'Template not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(MessageTemplateSerializer(template).data)
+
+    @extend_schema(request=MessageTemplateSerializer, responses={200: MessageTemplateSerializer})
+    def patch(self, request, template_id):
+        template = self._get(template_id)
+        if not template:
+            return Response({'detail': 'Template not found.'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = MessageTemplateSerializer(template, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, template_id):
+        template = self._get(template_id)
+        if not template:
+            return Response({'detail': 'Template not found.'}, status=status.HTTP_404_NOT_FOUND)
+        template.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MessageTemplatePreviewView(APIView):
+    """POST /api/v1/communications/templates/preview/ — interpolate placeholders for a candidate."""
+
+    @extend_schema(request=TemplatePreviewSerializer, summary='Preview template with candidate data')
+    def post(self, request):
+        serializer = TemplatePreviewSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            candidate = Candidate.objects.get(id=serializer.validated_data['candidate_id'])
+        except Candidate.DoesNotExist:
+            return Response({'detail': 'Candidate not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        content = serializer.validated_data.get('content') or ''
+        template_id = serializer.validated_data.get('template_id')
+        if template_id and not content:
+            template = MessageTemplate.objects.filter(id=template_id).first()
+            if not template:
+                return Response({'detail': 'Template not found.'}, status=status.HTTP_404_NOT_FOUND)
+            content = template.content
+
+        return Response({
+            'preview': render_message_content(content, candidate),
+            'placeholders': [{'token': token, 'description': desc} for token, desc in TEMPLATE_PLACEHOLDERS],
+        })

@@ -26,7 +26,7 @@ INSTALLED_APPS = [
     'drf_spectacular',
     # Local apps
     'apps.candidates',
-    'apps.communications',
+    'apps.communications.apps.CommunicationsConfig',
 ]
 
 MIDDLEWARE = [

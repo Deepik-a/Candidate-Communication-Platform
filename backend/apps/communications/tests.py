@@ -326,3 +326,162 @@ class CandidateCommunicationTests(TestCase):
         # Check candidate details are included
         self.assertEqual(latest["candidate_name"], "Rahul Sharma")
         self.assertEqual(latest["candidate_phone"], "+919876543210")
+        self.assertTrue(latest["is_retryable"])
+
+
+class BonusFeatureTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.candidate = Candidate.objects.create(
+            full_name="Rahul Sharma",
+            mobile_number="+919876543210",
+            email="rahul@example.com",
+        )
+
+    def test_template_interpolates_candidate_fields(self):
+        from apps.communications.models import MessageTemplate
+        from apps.communications.templates import render_message_content
+
+        template = MessageTemplate.objects.create(
+            name="Invite",
+            content="Hi {{full_name}} ({{candidate_id}}), we will call {{mobile_number}} or email {{email}}.",
+        )
+        rendered = render_message_content(template.content, self.candidate)
+        self.assertIn("Rahul Sharma", rendered)
+        self.assertIn(self.candidate.candidate_id, rendered)
+        self.assertIn("+919876543210", rendered)
+        self.assertIn("rahul@example.com", rendered)
+
+        service = CommunicationService(provider=StubFailProvider())
+        outcome = service.send_single_message(
+            candidate_id=self.candidate.id,
+            channel="sms",
+            content="",
+            template_id=template.id,
+        )
+        self.assertTrue(outcome.success)
+        msg = Message.objects.get(id=outcome.message_id)
+        self.assertEqual(msg.content, rendered)
+
+    def test_schedule_message_for_future_and_dispatch(self):
+        from datetime import timedelta
+        from django.utils import timezone
+
+        service = CommunicationService(provider=StubFailProvider())
+        when = timezone.now() + timedelta(hours=2)
+        outcome = service.send_single_message(
+            candidate_id=self.candidate.id,
+            channel="sms",
+            content="Hi {{full_name}}, this is a reminder.",
+            scheduled_at=when,
+        )
+        self.assertTrue(outcome.success)
+        self.assertEqual(outcome.status, MessageStatusLog.SCHEDULED)
+        msg = Message.objects.get(id=outcome.message_id)
+        self.assertEqual(msg.status, MessageStatusLog.SCHEDULED)
+        self.assertIn("Rahul Sharma", msg.content)
+
+        self.candidate.refresh_from_db()
+        self.assertEqual(self.candidate.status, "scheduled")
+
+        # Not due yet
+        dispatched = service.dispatch_due_scheduled_messages()
+        self.assertEqual(len(dispatched), 0)
+
+        msg.scheduled_at = timezone.now() - timedelta(minutes=1)
+        msg.save(update_fields=["scheduled_at"])
+        dispatched = service.dispatch_due_scheduled_messages()
+        self.assertEqual(len(dispatched), 1)
+        msg.refresh_from_db()
+        self.assertEqual(msg.status, MessageStatusLog.DELIVERED)
+        self.candidate.refresh_from_db()
+        self.assertEqual(self.candidate.status, "delivered")
+
+    def test_retry_distinguishes_permanent_and_retryable_failures(self):
+        service = CommunicationService(provider=StubFailProvider())
+        retryable = Message.objects.create(
+            candidate=self.candidate,
+            channel="sms",
+            content="Retry me",
+            status=MessageStatusLog.FAILED,
+            failure_category="temporary_provider_failure",
+            error_message="Temporary provider delay",
+        )
+        permanent = Message.objects.create(
+            candidate=self.candidate,
+            channel="sms",
+            content="Do not retry",
+            status=MessageStatusLog.FAILED,
+            failure_category="invalid_recipient",
+            error_message="Invalid recipient contact",
+        )
+
+        ok = service.retry_failed_message(retryable.id)
+        self.assertTrue(ok.success)
+        retryable.refresh_from_db()
+        self.assertEqual(retryable.status, MessageStatusLog.DELIVERED)
+        self.assertEqual(retryable.retry_count, 1)
+
+        blocked = service.retry_failed_message(permanent.id)
+        self.assertFalse(blocked.success)
+        self.assertFalse(blocked.is_retryable)
+        self.assertIn("permanent", blocked.error_message.lower())
+        permanent.refresh_from_db()
+        self.assertEqual(permanent.status, MessageStatusLog.FAILED)
+        self.assertEqual(permanent.retry_count, 0)
+
+    def test_health_and_provider_catalog_endpoints(self):
+        Message.objects.create(
+            candidate=self.candidate,
+            channel="sms",
+            content="sent one",
+            status=MessageStatusLog.SENT,
+        )
+        Message.objects.create(
+            candidate=self.candidate,
+            channel="sms",
+            content="delivered one",
+            status=MessageStatusLog.DELIVERED,
+        )
+        Message.objects.create(
+            candidate=self.candidate,
+            channel="sms",
+            content="failed one",
+            status=MessageStatusLog.FAILED,
+        )
+
+        health = self.client.get("/api/v1/communications/health/")
+        self.assertEqual(health.status_code, 200)
+        self.assertIn(health.data["status"], ["operational", "degraded", "unavailable"])
+        self.assertGreaterEqual(health.data["messages_sent"], 2)
+        self.assertGreaterEqual(health.data["messages_delivered"], 1)
+        self.assertGreaterEqual(health.data["messages_failed"], 1)
+        self.assertTrue(health.data["providers"])
+
+        catalog = self.client.get("/api/v1/communications/providers/")
+        self.assertEqual(catalog.status_code, 200)
+        ids = {p["id"] for p in catalog.data["results"]}
+        self.assertIn("dummy", ids)
+        self.assertIn("whatsapp", ids)
+        self.assertIn("mock", ids)
+
+    def test_template_crud_endpoint(self):
+        created = self.client.post(
+            "/api/v1/communications/templates/",
+            data={"name": "Follow up", "content": "Hello {{full_name}}", "channel": "sms"},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201)
+        template_id = created.data["id"]
+
+        listed = self.client.get("/api/v1/communications/templates/")
+        self.assertEqual(listed.status_code, 200)
+        self.assertTrue(any(t["id"] == template_id for t in listed.data))
+
+        preview = self.client.post(
+            "/api/v1/communications/templates/preview/",
+            data={"candidate_id": self.candidate.id, "template_id": template_id},
+            format="json",
+        )
+        self.assertEqual(preview.status_code, 200)
+        self.assertIn("Rahul Sharma", preview.data["preview"])

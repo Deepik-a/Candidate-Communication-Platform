@@ -14,6 +14,7 @@ class MessageStatus(str, Enum):
     READ = "read"
     SENT = "sent"
     FAILED = "failed"
+    SCHEDULED = "scheduled"
     NA = "NA"
 
 

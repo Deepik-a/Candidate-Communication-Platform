@@ -1,7 +1,8 @@
 // API types matching backend models
 
-export type MessageStatus = 'read' | 'delivered' | 'sent' | 'failed' | 'NA';
+export type MessageStatus = 'read' | 'delivered' | 'sent' | 'failed' | 'scheduled' | 'pending' | 'NA';
 export type MessageChannel = 'sms' | 'whatsapp' | 'email';
+export type ProviderHealthStatus = 'operational' | 'degraded' | 'unavailable';
 
 export interface Candidate {
   id: number;
@@ -44,6 +45,8 @@ export interface SendMessagePayload {
   channel: MessageChannel;
   content: string;
   provider?: string;
+  scheduled_at?: string | null;
+  template_id?: number | null;
 }
 
 export interface BulkSendMessagePayload {
@@ -51,6 +54,8 @@ export interface BulkSendMessagePayload {
   channel: MessageChannel;
   content: string;
   provider?: string;
+  scheduled_at?: string | null;
+  template_id?: number | null;
 }
 
 export interface CandidateMessageOutcome {
@@ -64,6 +69,7 @@ export interface CandidateMessageOutcome {
   provider_message_id: string;
   failure_category?: string | null;
   error_message: string | null;
+  is_retryable?: boolean;
 }
 
 export interface BulkSendMessageResponse {
@@ -87,6 +93,46 @@ export interface Message {
   provider_message_id?: string;
   failure_category?: string;
   error_message?: string;
+  scheduled_at?: string | null;
+  template?: number | null;
+  template_name?: string | null;
+  retry_count?: number;
+  is_retryable?: boolean;
   sent_at: string;
   updated_at: string;
+}
+
+export interface MessageTemplate {
+  id: number;
+  name: string;
+  content: string;
+  channel: string;
+  placeholders?: { token: string; description: string }[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderCatalogItem {
+  id: string;
+  name: string;
+  description: string;
+  channels: string[];
+  health: {
+    id: string;
+    name: string;
+    status: ProviderHealthStatus | string;
+    detail: string;
+  };
+}
+
+export interface CommunicationHealth {
+  status: ProviderHealthStatus | string;
+  label: string;
+  recruiter_notice: string;
+  messages_sent: number;
+  messages_delivered: number;
+  messages_failed: number;
+  messages_scheduled: number;
+  messages_read: number;
+  providers: ProviderCatalogItem[];
 }

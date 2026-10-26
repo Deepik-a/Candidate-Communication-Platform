@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Drawer,
   Box,
@@ -9,12 +9,17 @@ import {
   Button,
   Stack,
   CircularProgress,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  TextField,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 
 import { communicationsApi } from '@/lib/api';
 import { useToast } from '@/context/ToastContext';
-import { Candidate } from '@/types';
+import { Candidate, MessageChannel, MessageTemplate } from '@/types';
 
 interface SendMessageModalProps {
   open: boolean;
@@ -22,6 +27,13 @@ interface SendMessageModalProps {
   onSuccess: () => void;
   candidate: Candidate | null;
   recipients?: Candidate[];
+}
+
+function toIsoOrNull(localValue: string): string | null {
+  if (!localValue) return null;
+  const date = new Date(localValue);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
 }
 
 export function SendMessageModal({
@@ -35,20 +47,68 @@ export function SendMessageModal({
   const [loading, setLoading] = useState(false);
   const [content, setContent] = useState('');
   const [contentError, setContentError] = useState('');
+  const [channel, setChannel] = useState<MessageChannel>('sms');
+  const [provider, setProvider] = useState('dummy');
+  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [templateId, setTemplateId] = useState<number | ''>('');
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [preview, setPreview] = useState('');
 
-  // Determine recipient list
   const recipientList: Candidate[] =
     recipients.length > 0 ? recipients : candidate ? [candidate] : [];
+  const previewCandidateId = recipientList[0]?.id;
+
+  useEffect(() => {
+    if (!open) return;
+    communicationsApi.listTemplates().then(setTemplates).catch(() => setTemplates([]));
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !previewCandidateId || !content.trim()) {
+      setPreview('');
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const result = await communicationsApi.previewTemplate({
+          candidate_id: previewCandidateId,
+          content,
+          template_id: templateId || undefined,
+        });
+        setPreview(result.preview);
+      } catch {
+        setPreview('');
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [open, content, templateId, previewCandidateId]);
 
   const handleClose = () => {
     if (loading) return;
     setContent('');
     setContentError('');
+    setTemplateId('');
+    setScheduledAt('');
+    setPreview('');
+    setChannel('sms');
+    setProvider('dummy');
     onClose();
   };
 
+  const handleTemplateChange = (id: number | '') => {
+    setTemplateId(id);
+    if (id === '') return;
+    const selected = templates.find((t) => t.id === id);
+    if (selected) {
+      setContent(selected.content);
+      if (selected.channel === 'sms' || selected.channel === 'whatsapp' || selected.channel === 'email') {
+        setChannel(selected.channel);
+      }
+    }
+  };
+
   const handleSend = async () => {
-    if (!content.trim()) {
+    if (!content.trim() && !templateId) {
       setContentError('Message content cannot be empty.');
       return;
     }
@@ -57,22 +117,46 @@ export function SendMessageModal({
     setLoading(true);
     setContentError('');
 
+    const payloadExtras = {
+      channel,
+      content: content.trim(),
+      provider,
+      scheduled_at: toIsoOrNull(scheduledAt),
+      template_id: templateId || null,
+    };
+
     try {
       if (recipientList.length === 1) {
         const target = recipientList[0];
-        await communicationsApi.send({
+        const outcome = await communicationsApi.send({
           candidate_id: target.id,
-          channel: 'sms',
-          content: content.trim(),
+          ...payloadExtras,
         });
-        showToast('Message sent to 1 candidate', 'success');
+        if (!outcome.success) {
+          showToast(outcome.error_message || 'Message failed to send.', 'error');
+        } else if (outcome.status === 'scheduled') {
+          showToast('Message scheduled for 1 candidate', 'success');
+        } else {
+          showToast('Message sent to 1 candidate', 'success');
+        }
       } else {
-        await communicationsApi.bulkSend({
+        const resp = await communicationsApi.bulkSend({
           candidate_ids: recipientList.map((r) => r.id),
-          channel: 'sms',
-          content: content.trim(),
+          ...payloadExtras,
         });
-        showToast(`Message sent to ${recipientList.length} candidates`, 'success');
+        if (resp.failed_count === 0) {
+          showToast(
+            scheduledAt
+              ? `Message scheduled for ${resp.successful_count} candidates`
+              : `Message sent to ${resp.successful_count} candidates`,
+            'success',
+          );
+        } else {
+          showToast(
+            `Sent to ${resp.successful_count}; ${resp.failed_count} failed. Check history for details.`,
+            'warning',
+          );
+        }
       }
 
       handleClose();
@@ -101,7 +185,6 @@ export function SendMessageModal({
         },
       }}
     >
-      {/* ── Top Header matching Screenshot ───────────────────────────────── */}
       <Box
         sx={{
           display: 'flex',
@@ -137,7 +220,6 @@ export function SendMessageModal({
         </IconButton>
       </Box>
 
-      {/* ── Body matching Screenshot ───────────────────────────────────────── */}
       <Box
         sx={{
           px: 3.5,
@@ -145,19 +227,12 @@ export function SendMessageModal({
           flex: 1,
           display: 'flex',
           flexDirection: 'column',
-          gap: 3.5,
+          gap: 2.5,
+          overflowY: 'auto',
         }}
       >
-        {/* Recipient Section */}
         <Box>
-          <Typography
-            sx={{
-              fontWeight: 600,
-              fontSize: '0.875rem',
-              color: '#1f2937',
-              mb: 1,
-            }}
-          >
+          <Typography sx={{ fontWeight: 600, fontSize: '0.875rem', color: '#1f2937', mb: 1 }}>
             {recipientList.length === 1 ? '1 Recipient' : `${recipientList.length} Recipients`}
           </Typography>
           <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
@@ -181,32 +256,63 @@ export function SendMessageModal({
           </Stack>
         </Box>
 
-        {/* Message Field Section */}
-        <Box>
-          <Typography
-            sx={{
-              fontWeight: 600,
-              fontSize: '0.875rem',
-              color: '#1f2937',
-            }}
+        <Stack direction="row" spacing={1.5}>
+          <FormControl fullWidth size="small">
+            <InputLabel>Channel</InputLabel>
+            <Select
+              value={channel}
+              label="Channel"
+              onChange={(e) => setChannel(e.target.value as MessageChannel)}
+              disabled={loading}
+            >
+              <MenuItem value="sms">SMS</MenuItem>
+              <MenuItem value="whatsapp">WhatsApp</MenuItem>
+              <MenuItem value="email">Email</MenuItem>
+            </Select>
+          </FormControl>
+          <FormControl fullWidth size="small">
+            <InputLabel>Provider</InputLabel>
+            <Select
+              value={provider}
+              label="Provider"
+              onChange={(e) => setProvider(e.target.value)}
+              disabled={loading}
+            >
+              <MenuItem value="dummy">Dummy Service</MenuItem>
+              <MenuItem value="whatsapp">WhatsApp Cloud / Sandbox</MenuItem>
+              <MenuItem value="mock">Mock Gateway</MenuItem>
+            </Select>
+          </FormControl>
+        </Stack>
+
+        <FormControl fullWidth size="small">
+          <InputLabel>Template</InputLabel>
+          <Select
+            value={templateId}
+            label="Template"
+            onChange={(e) => handleTemplateChange(e.target.value as number | '')}
+            disabled={loading}
           >
+            <MenuItem value="">Write a custom message</MenuItem>
+            {templates.map((template) => (
+              <MenuItem key={template.id} value={template.id}>
+                {template.name}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+
+        <Box>
+          <Typography sx={{ fontWeight: 600, fontSize: '0.875rem', color: '#1f2937' }}>
             Message{' '}
             <Box component="span" sx={{ color: '#d32f2f' }}>
               *
             </Box>
           </Typography>
-          <Typography
-            sx={{
-              fontSize: '0.78rem',
-              color: '#6b7280',
-              mt: 0.5,
-              mb: 1.5,
-            }}
-          >
-            Type, or paste the message you want to send.
+          <Typography sx={{ fontSize: '0.78rem', color: '#6b7280', mt: 0.5, mb: 1.5 }}>
+            Type a message or pick a template. Candidate fields like {'{{full_name}}'} are filled in at send time.
           </Typography>
 
-          {/* Dev note: Use the text area component here, so the box can be resized. */}
           <Box
             component="textarea"
             id="message-send-textarea"
@@ -220,14 +326,14 @@ export function SendMessageModal({
             disabled={loading}
             sx={{
               width: '100%',
-              minHeight: 160,
+              minHeight: 140,
               border: contentError ? '1px solid #d32f2f' : '1px solid #cfd8dc',
               borderRadius: '4px',
               p: 1.5,
               fontSize: '0.875rem',
               fontFamily: 'inherit',
               color: '#1f2937',
-              resize: 'both', // Resizable component strictly following dev note
+              resize: 'both',
               outline: 'none',
               boxSizing: 'border-box',
               lineHeight: 1.5,
@@ -247,9 +353,30 @@ export function SendMessageModal({
             </Typography>
           )}
         </Box>
+
+        {preview && recipientList.length === 1 && preview !== content && (
+          <Box sx={{ backgroundColor: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '4px', p: 1.5 }}>
+            <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748b', mb: 0.5 }}>
+              Preview for {recipientList[0].full_name}
+            </Typography>
+            <Typography sx={{ fontSize: '0.8125rem', color: '#1f2937', whiteSpace: 'pre-wrap' }}>
+              {preview}
+            </Typography>
+          </Box>
+        )}
+
+        <TextField
+          size="small"
+          label="Schedule send (optional)"
+          type="datetime-local"
+          value={scheduledAt}
+          onChange={(e) => setScheduledAt(e.target.value)}
+          disabled={loading}
+          InputLabelProps={{ shrink: true }}
+          helperText="Leave empty to send immediately."
+        />
       </Box>
 
-      {/* ── Footer Actions matching Screenshot ─────────────────────────────── */}
       <Box
         sx={{
           px: 3.5,
@@ -307,7 +434,13 @@ export function SendMessageModal({
             },
           }}
         >
-          {loading ? <CircularProgress size={18} color="inherit" /> : 'Send Message'}
+          {loading ? (
+            <CircularProgress size={18} color="inherit" />
+          ) : scheduledAt ? (
+            'Schedule Message'
+          ) : (
+            'Send Message'
+          )}
         </Button>
       </Box>
     </Drawer>

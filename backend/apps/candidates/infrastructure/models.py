@@ -24,6 +24,7 @@ class MessageStatus(models.TextChoices):
     READ = 'read', 'Read'
     SENT = 'sent', 'Sent'
     FAILED = 'failed', 'Failed'
+    SCHEDULED = 'scheduled', 'Scheduled'
     NA = 'NA', 'NA'
 
 

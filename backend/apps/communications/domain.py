@@ -56,3 +56,12 @@ class CommunicationProvider(ABC):
     def check_status(self, provider_message_id: str) -> DeliveryStatus:
         """Fetch latest status from provider."""
         ...
+
+    def health(self) -> dict:
+        """Current provider health. Override in concrete adapters."""
+        return {
+            "id": self.provider_name,
+            "name": self.provider_name,
+            "status": "operational",
+            "detail": "Provider is ready.",
+        }
