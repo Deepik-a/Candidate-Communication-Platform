@@ -168,12 +168,12 @@ class MessageDetailStatusView(APIView):
 class MessageSyncStatusView(APIView):
     """
     POST /api/v1/communications/messages/<message_id>/sync/
-    Actively queries the downstream provider for the latest status and updates database.
+    Actively polls the dummy provider for the latest message status and updates the database.
     """
 
     @extend_schema(
         responses={200: MessageSerializer},
-        summary='Sync latest status directly from external provider',
+        summary='Sync latest status directly from dummy provider',
     )
     def post(self, request, message_id):
         try:
@@ -183,9 +183,7 @@ class MessageSyncStatusView(APIView):
 
         service = get_communication_service()
         if message.provider_message_id:
-            from .providers import ProviderFactory
-            provider_type = "whatsapp" if "wamid" in message.provider_message_id else "dummy"
-            provider = ProviderFactory.get_provider(channel=message.channel, provider_name=provider_type)
+            provider = ProviderFactory.get_provider(channel=message.channel, provider_name='dummy')
             latest_status = provider.check_status(message.provider_message_id)
 
             outcome = service.update_message_status(
@@ -200,62 +198,31 @@ class MessageSyncStatusView(APIView):
 class ProviderWebhookView(APIView):
     """
     POST /api/v1/communications/webhook/
-    Requirement #7: Universal provider callback/webhook receiver.
-    Receives status updates from communication providers (Dummy Service, WhatsApp Cloud API, Twilio).
-    Features:
-    - Automatically maps provider-specific payloads (reference_id, wamid, MessageSid)
-    - Enforces progression: Sent -> Delivered -> Read
-    - Idempotent: Handles repeated callbacks gracefully with HTTP 200 without duplicate actions
-    - Synchronizes Candidate journey status in real-time
+    Webhook receiver for the dummy communication provider.
+    Receives status update callbacks and progresses message status: Sent → Delivered → Read.
+    Idempotent: duplicate callbacks are handled gracefully (returns 200 with no side-effects).
     """
 
     @extend_schema(
-        summary='Universal provider webhook receiver',
+        summary='Dummy provider webhook receiver',
         responses={200: dict},
     )
     def post(self, request):
         payload = request.data or {}
-        
-        # 1. Parse provider message reference ID & target status
-        provider_msg_id = None
-        target_status = None
-        raw_error = None
 
-        # Format A: Meta WhatsApp Cloud API Webhook structure
-        # { "entry": [ { "changes": [ { "value": { "statuses": [ { "id": "wamid...", "status": "delivered" } ] } } ] } ] }
-        if "entry" in payload and isinstance(payload.get("entry"), list):
-            try:
-                entry = payload["entry"][0]
-                changes = entry.get("changes", [])[0]
-                val = changes.get("value", {})
-                statuses = val.get("statuses", [])
-                if statuses:
-                    s_item = statuses[0]
-                    provider_msg_id = s_item.get("id")
-                    target_status = s_item.get("status")
-                    if s_item.get("errors"):
-                        raw_error = json.dumps(s_item.get("errors"))
-            except (IndexError, KeyError, TypeError):
-                pass
+        # Parse dummy service webhook payload:
+        # { "reference_id": "sent_XXXX", "status": "delivered" }
+        # Also supports: provider_message_id, message_ref, id, message_id
+        provider_msg_id = (
+            payload.get("provider_message_id")
+            or payload.get("reference_id")
+            or payload.get("message_ref")
+            or payload.get("id")
+        )
+        target_status = payload.get("status")
+        raw_error = payload.get("error") or payload.get("error_message")
 
-        # Format B: Twilio format (MessageSid, MessageStatus)
-        if not provider_msg_id and ("MessageSid" in payload or "MessageStatus" in payload):
-            provider_msg_id = payload.get("MessageSid")
-            target_status = payload.get("MessageStatus")
-            raw_error = payload.get("ErrorMessage")
-
-        # Format C: Dummy Service or standard generic webhook
-        if not provider_msg_id:
-            provider_msg_id = (
-                payload.get("provider_message_id")
-                or payload.get("reference_id")
-                or payload.get("message_ref")
-                or payload.get("id")
-            )
-            target_status = payload.get("status")
-            raw_error = payload.get("error") or payload.get("error_message")
-
-        # Direct message_id fallback if provider_message_id is not known
+        # Direct message_id fallback
         direct_msg_id = payload.get("message_id")
 
         if not target_status:

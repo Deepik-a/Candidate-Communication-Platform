@@ -4,13 +4,13 @@ Infrastructure layer (Clean Architecture + Open/Closed Principle + Liskov Substi
 
 Supports:
 1. Dummy Independent Communication Provider (HTTP microservice on port 9000)
-2. Real WhatsApp Cloud / Sandbox API provider (Meta Graph API / WhatsApp Sandbox)
-3. In-memory / Fallback Mock provider
-All provider errors are translated to recruiter-friendly messages via CommunicationFailureTranslator.
+   - Send messages & receive reference IDs
+   - Webhook-based status updates (Sent → Delivered → Read)
+   - Simulates successful messages, failures, and temporary provider outages
+2. Mock In-Memory Provider (internal fallback for tests / offline dev)
 """
 
 import uuid
-import random
 import logging
 from typing import Dict, Optional
 import requests
@@ -24,14 +24,15 @@ logger = logging.getLogger(__name__)
 
 class DummyServiceCommunicationProvider(CommunicationProvider):
     """
-    Adapter for the independent dummy communication microservice (Requirement #6).
-    Communicates over HTTP with the standalone provider process:
-    - Sends message
-    - Receives message reference ID
-    - Queries status updates
-    - Handles temporary provider failures (503 / 504) with graceful resilience
-    - Handles rate limiting (429)
-    - Handles simulated rejections / failed states
+    Adapter for the independent dummy communication microservice.
+    Communicates over HTTP with the standalone dummy_provider/server.py process.
+
+    Capabilities (matching all project requirements for a dummy provider):
+    - POST /messages/send      → send a message, get reference_id back
+    - GET  /messages/{id}/status → poll current delivery status
+    - GET  /health             → provider health check
+    - Webhooks fired by the dummy service update backend status in real-time
+    - Simulates: success, failure, temporary outage (503), rate-limit (429)
     """
 
     def __init__(self, base_url: Optional[str] = None):
@@ -53,7 +54,7 @@ class DummyServiceCommunicationProvider(CommunicationProvider):
         try:
             resp = requests.post(url, json=payload, timeout=5)
 
-            # Handle 429 Rate Limit
+            # 429 Rate Limit — simulated by dummy provider's rate_limit mode
             if resp.status_code == 429:
                 analysis = CommunicationFailureTranslator.translate(
                     channel=channel,
@@ -71,9 +72,13 @@ class DummyServiceCommunicationProvider(CommunicationProvider):
                     technical_details=analysis.technical_details,
                 )
 
-            # Handle temporary service failure (e.g. 503 Service Unavailable / Gateway Timeout)
-            if resp.status_code in (503, 502, 504):
-                err_data = resp.json() if resp.headers.get("content-type") == "application/json" else {}
+            # 502 / 503 / 504 Temporary failure — simulated by dummy provider's temporary_failure mode
+            if resp.status_code in (502, 503, 504):
+                err_data = {}
+                try:
+                    err_data = resp.json()
+                except Exception:
+                    pass
                 err_msg = err_data.get("error", "Temporary downstream provider unavailable.")
                 analysis = CommunicationFailureTranslator.translate(
                     channel=channel,
@@ -91,7 +96,7 @@ class DummyServiceCommunicationProvider(CommunicationProvider):
                     technical_details=analysis.technical_details,
                 )
 
-            # Try parsing JSON response
+            # Parse JSON response
             try:
                 data = resp.json()
             except Exception:
@@ -102,7 +107,6 @@ class DummyServiceCommunicationProvider(CommunicationProvider):
             ref_id = data.get("reference_id", f"ref_{uuid.uuid4().hex[:8]}")
             err = data.get("error")
 
-            # Map status string to DeliveryStatus enum
             status_map = {
                 "sent": DeliveryStatus.SENT,
                 "delivered": DeliveryStatus.DELIVERED,
@@ -160,12 +164,16 @@ class DummyServiceCommunicationProvider(CommunicationProvider):
         try:
             resp = requests.get(url, timeout=2)
             if resp.status_code == 200:
-                data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                data = {}
+                try:
+                    data = resp.json()
+                except Exception:
+                    pass
                 return {
                     "id": "dummy",
                     "name": "Dummy Communication Service",
                     "status": "operational",
-                    "detail": data.get("status", "healthy"),
+                    "detail": data.get("status", "Service is healthy and ready to accept messages."),
                     "base_url": self._base_url,
                 }
             return {
@@ -180,7 +188,10 @@ class DummyServiceCommunicationProvider(CommunicationProvider):
                 "id": "dummy",
                 "name": "Dummy Communication Service",
                 "status": "unavailable",
-                "detail": "The communication provider is unavailable. Messages cannot be sent until the service is running.",
+                "detail": (
+                    "The dummy communication provider is not running. "
+                    "Start it with: python dummy_provider/server.py"
+                ),
                 "base_url": self._base_url,
                 "error": str(e),
             }
@@ -204,136 +215,12 @@ class DummyServiceCommunicationProvider(CommunicationProvider):
         return DeliveryStatus.SENT
 
 
-class WhatsAppCloudCommunicationProvider(CommunicationProvider):
-    """
-    Real Communication Provider: Meta WhatsApp Cloud API / WhatsApp Sandbox (Requirement #6).
-    Uses the official Meta Graph API v20.0 or sandbox test credentials.
-    Translates WhatsApp Cloud API errors into recruiter-friendly explanations.
-    """
-
-    def __init__(
-        self,
-        api_token: Optional[str] = None,
-        phone_number_id: Optional[str] = None,
-        api_version: str = "v20.0",
-    ):
-        self._api_token = api_token or config("WHATSAPP_API_TOKEN", default="")
-        self._phone_number_id = phone_number_id or config("WHATSAPP_PHONE_NUMBER_ID", default="")
-        self._api_version = api_version
-        self._name = "whatsapp-cloud-api"
-
-    @property
-    def provider_name(self) -> str:
-        return self._name
-
-    def send(self, recipient: str, content: str, channel: str) -> ProviderMessageResult:
-        clean_recipient = recipient.replace("+", "").replace(" ", "").replace("-", "")
-
-        # Live WhatsApp Cloud API call
-        if self._api_token and self._phone_number_id and not clean_recipient.startswith("0000"):
-            url = f"https://graph.facebook.com/{self._api_version}/{self._phone_number_id}/messages"
-            headers = {
-                "Authorization": f"Bearer {self._api_token}",
-                "Content-Type": "application/json",
-            }
-            payload = {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": clean_recipient,
-                "type": "text",
-                "text": {"preview_url": False, "body": content},
-            }
-
-            try:
-                resp = requests.post(url, headers=headers, json=payload, timeout=10)
-                data = resp.json()
-
-                if resp.status_code in (200, 201) and "messages" in data:
-                    wamid = data["messages"][0]["id"]
-                    return ProviderMessageResult(
-                        success=True,
-                        status=DeliveryStatus.SENT,
-                        provider_name=self._name,
-                        provider_message_id=wamid,
-                        error_message=None,
-                    )
-                else:
-                    err_info = data.get("error", {})
-                    err_msg = err_info.get("message", f"HTTP {resp.status_code} WhatsApp API error")
-                    analysis = CommunicationFailureTranslator.translate(
-                        channel=channel,
-                        recipient=recipient,
-                        status_code=resp.status_code,
-                        raw_error=err_msg,
-                    )
-                    return ProviderMessageResult(
-                        success=False,
-                        status=DeliveryStatus.FAILED,
-                        provider_name=self._name,
-                        provider_message_id=f"wamid_fail_{uuid.uuid4().hex[:8]}",
-                        failure_category=analysis.category.value,
-                        error_message=analysis.recruiter_message,
-                        technical_details=analysis.technical_details,
-                    )
-            except requests.exceptions.RequestException as e:
-                analysis = CommunicationFailureTranslator.translate(
-                    channel=channel,
-                    recipient=recipient,
-                    exception=e,
-                )
-                return ProviderMessageResult(
-                    success=False,
-                    status=DeliveryStatus.FAILED,
-                    provider_name=self._name,
-                    provider_message_id=f"wamid_err_{uuid.uuid4().hex[:8]}",
-                    failure_category=analysis.category.value,
-                    error_message=analysis.recruiter_message,
-                    technical_details=analysis.technical_details,
-                )
-
-        # Developer / Sandbox Mode:
-        if "[fail]" in content.lower() or clean_recipient.startswith("0000") or "fail" in recipient.lower():
-            analysis = CommunicationFailureTranslator.translate(
-                channel=channel,
-                recipient=recipient,
-                raw_error="WhatsApp Sandbox rejection: Destination number not in allowed sandbox test list or inactive subscriber.",
-            )
-            return ProviderMessageResult(
-                success=False,
-                status=DeliveryStatus.FAILED,
-                provider_name=f"{self._name} (sandbox)",
-                provider_message_id=f"wamid.HB_{uuid.uuid4().hex[:16]}",
-                failure_category=analysis.category.value,
-                error_message=analysis.recruiter_message,
-                technical_details=analysis.technical_details,
-            )
-
-        # Standard sandbox delivery
-        wamid = f"wamid.HB_{uuid.uuid4().hex[:18]}"
-        assigned_status = DeliveryStatus.READ if "read" in content.lower() else DeliveryStatus.DELIVERED
-        return ProviderMessageResult(
-            success=True,
-            status=assigned_status,
-            provider_name=f"{self._name} (sandbox)",
-            provider_message_id=wamid,
-            error_message=None,
-        )
-
-    def check_status(self, provider_message_id: str) -> DeliveryStatus:
-        return DeliveryStatus.DELIVERED
-
-    def health(self) -> dict:
-        mode = "live" if (self._api_token and self._phone_number_id) else "sandbox"
-        return {
-            "id": "whatsapp",
-            "name": "WhatsApp Cloud API / Sandbox",
-            "status": "operational",
-            "detail": f"WhatsApp provider ready ({mode} mode).",
-        }
-
-
 class MockCommunicationProvider(CommunicationProvider):
-    """Local fallback / in-memory provider."""
+    """
+    In-memory fallback provider for local development and automated tests.
+    Does not make any HTTP calls — purely simulates delivery in-process.
+    Simulates failures when content contains '[fail]' or recipient starts with '0000'.
+    """
 
     def __init__(self, provider_name: str = "mock-gateway"):
         self._provider_name = provider_name
@@ -363,12 +250,10 @@ class MockCommunicationProvider(CommunicationProvider):
                 technical_details=analysis.technical_details,
             )
 
-        assigned_status = DeliveryStatus.SENT
-        self._status_store[msg_id] = assigned_status
-
+        self._status_store[msg_id] = DeliveryStatus.SENT
         return ProviderMessageResult(
             success=True,
-            status=assigned_status,
+            status=DeliveryStatus.SENT,
             provider_name=self._provider_name,
             provider_message_id=msg_id,
             error_message=None,
@@ -380,19 +265,22 @@ class MockCommunicationProvider(CommunicationProvider):
     def health(self) -> dict:
         return {
             "id": "mock",
-            "name": "Mock Gateway",
+            "name": "Mock Gateway (Offline Dev)",
             "status": "operational",
-            "detail": "In-memory mock provider is ready.",
+            "detail": "In-memory mock provider — no external calls. Use dummy provider for full simulation.",
         }
 
 
 class ProviderFactory:
     """
     Factory resolving CommunicationProvider instances (DIP & OCP).
-    Supports:
-    - 'whatsapp' / 'real': WhatsApp Cloud API / Sandbox
-    - 'dummy': Standalone HTTP Dummy Communication Service (port 9000)
-    - 'mock': In-memory gateway
+
+    Provider resolution order:
+    - 'dummy' (default): Standalone HTTP Dummy Communication Service (port 9000)
+    - 'mock' / anything else: In-memory fallback (no external service required)
+
+    WhatsApp and other real providers have been intentionally removed.
+    All production and demo usage should use the dummy provider.
     """
 
     _providers: Dict[str, CommunicationProvider] = {}
@@ -401,18 +289,14 @@ class ProviderFactory:
     def get_provider(cls, channel: str = "sms", provider_name: Optional[str] = None) -> CommunicationProvider:
         configured = provider_name or config("DEFAULT_COMMUNICATION_PROVIDER", default="dummy")
 
-        if configured in ("whatsapp", "whatsapp_cloud", "real") or (configured == "auto" and channel == "whatsapp"):
-            key = "provider:whatsapp_cloud"
-            if key not in cls._providers:
-                cls._providers[key] = WhatsAppCloudCommunicationProvider()
-            return cls._providers[key]
-
-        if configured in ("dummy", "dummy_service", "standalone"):
+        # Dummy standalone HTTP provider (default)
+        if configured in ("dummy", "dummy_service", "standalone", "auto"):
             key = "provider:dummy_service"
             if key not in cls._providers:
                 cls._providers[key] = DummyServiceCommunicationProvider()
             return cls._providers[key]
 
+        # Mock in-memory fallback
         key = f"mock:{channel}"
         if key not in cls._providers:
             cls._providers[key] = MockCommunicationProvider(provider_name=f"mock-{channel}")
@@ -420,34 +304,22 @@ class ProviderFactory:
 
     @classmethod
     def register_provider(cls, name: str, provider: CommunicationProvider) -> None:
+        """Register a custom provider instance (useful for testing)."""
         cls._providers[name] = provider
 
     @classmethod
     def catalog(cls) -> list:
-        """Recruiter-facing provider catalog used at send time."""
+        """Provider catalog returned by the health/providers API endpoint."""
         dummy = cls.get_provider(channel="sms", provider_name="dummy")
-        whatsapp = cls.get_provider(channel="whatsapp", provider_name="whatsapp")
-        mock = cls.get_provider(channel="sms", provider_name="mock")
         return [
             {
                 "id": "dummy",
                 "name": "Dummy Communication Service",
-                "description": "Standalone HTTP provider with delivery status callbacks.",
+                "description": (
+                    "Standalone HTTP microservice simulating a real communication provider. "
+                    "Supports send, status polling, webhook callbacks, and failure simulation modes."
+                ),
                 "channels": ["sms", "whatsapp", "email"],
                 "health": dummy.health(),
-            },
-            {
-                "id": "whatsapp",
-                "name": "WhatsApp Cloud API / Sandbox",
-                "description": "Meta Graph API or developer sandbox.",
-                "channels": ["whatsapp", "sms"],
-                "health": whatsapp.health(),
-            },
-            {
-                "id": "mock",
-                "name": "Mock Gateway",
-                "description": "Local in-memory provider for development and fallback.",
-                "channels": ["sms", "whatsapp", "email"],
-                "health": mock.health(),
             },
         ]
