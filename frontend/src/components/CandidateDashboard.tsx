@@ -145,11 +145,11 @@ export default function CandidateDashboard() {
   // otherwise, preserve natural backend ordering (-created_at, recently added at top)
   const sortedCandidates = sortField
     ? [...candidates].sort((a, b) => {
-        const aVal = a[sortField] ?? '';
-        const bVal = b[sortField] ?? '';
-        const cmp = String(aVal).localeCompare(String(bVal));
-        return sortOrder === 'asc' ? cmp : -cmp;
-      })
+      const aVal = a[sortField] ?? '';
+      const bVal = b[sortField] ?? '';
+      const cmp = String(aVal).localeCompare(String(bVal));
+      return sortOrder === 'asc' ? cmp : -cmp;
+    })
     : candidates;
 
   // Selection handlers
@@ -320,7 +320,7 @@ export default function CandidateDashboard() {
                 },
               }}
             >
-              + ADD CANDIDATE
+              ADD CANDIDATE
             </Button>
 
             {/* DELETE CANDIDATE */}
