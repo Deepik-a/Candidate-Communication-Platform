@@ -199,13 +199,33 @@ export function CandidateDetailModal({
     }
   }, [candidate]);
 
+  // Silent refresh for polling (no loading spinner flicker)
+  const silentRefresh = useCallback(async () => {
+    if (!candidate) return;
+    try {
+      const history = await communicationsApi.getHistory(candidate.id);
+      const sorted = [...history].sort((a, b) => {
+        const timeA = new Date(a.sent_at || 0).getTime();
+        const timeB = new Date(b.sent_at || 0).getTime();
+        return timeB - timeA;
+      });
+      setMessages(sorted);
+    } catch {
+      // silently ignore poll errors
+    }
+  }, [candidate]);
+
+  // Initial load + real-time polling every 4 seconds while drawer is open
   useEffect(() => {
     if (open && candidate) {
       fetchHistory();
+      const interval = setInterval(silentRefresh, 4000);
+      return () => clearInterval(interval);
     } else {
       setMessages([]);
     }
-  }, [open, candidate, fetchHistory]);
+  }, [open, candidate, fetchHistory, silentRefresh]);
+
 
   const handleRetry = async (message: Message) => {
     setRetryingId(message.id);

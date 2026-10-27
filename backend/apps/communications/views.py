@@ -278,10 +278,12 @@ class ProviderWebhookView(APIView):
             raw_error=raw_error,
         )
 
+        # Always return 200 so external providers (e.g. dummy service) don't log FAIL.
+        # Webhooks are fire-and-forget acknowledgements — the provider doesn't need error details.
         if not outcome.message:
             return Response(
                 {"success": False, "detail": outcome.detail},
-                status=status.HTTP_404_NOT_FOUND,
+                status=status.HTTP_200_OK,
             )
 
         return Response(
