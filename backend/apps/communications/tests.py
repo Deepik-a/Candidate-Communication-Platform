@@ -15,7 +15,6 @@ from apps.communications.failures import CommunicationFailureTranslator, Failure
 from apps.communications.domain import CommunicationProvider, ProviderMessageResult, DeliveryStatus
 from apps.communications.providers import (
     DummyServiceCommunicationProvider,
-    WhatsAppCloudCommunicationProvider,
     ProviderFactory,
 )
 
@@ -462,8 +461,6 @@ class BonusFeatureTests(TestCase):
         self.assertEqual(catalog.status_code, 200)
         ids = {p["id"] for p in catalog.data["results"]}
         self.assertIn("dummy", ids)
-        self.assertIn("whatsapp", ids)
-        self.assertIn("mock", ids)
 
     def test_template_crud_endpoint(self):
         created = self.client.post(

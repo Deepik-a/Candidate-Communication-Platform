@@ -107,11 +107,30 @@ export default function CandidateDashboard() {
     }
   }, []);
 
+  // Real-time status sync: silently polls candidate statuses (Sent -> Delivered -> Read) every 5s without UI flicker
+  const silentFetchCandidates = useCallback(async () => {
+    try {
+      const data = await candidatesApi.list({
+        search: search || undefined,
+        page: page + 1,
+        page_size: rowsPerPage,
+      });
+      setCandidates(data.results);
+      setTotalCount(data.count);
+    } catch {
+      // Silently ignore transient blips during polling
+    }
+  }, [search, page, rowsPerPage]);
+
   useEffect(() => {
     refreshHealth();
     const timer = setInterval(refreshHealth, 15000);
-    return () => clearInterval(timer);
-  }, [refreshHealth]);
+    const pollTimer = setInterval(silentFetchCandidates, 5000);
+    return () => {
+      clearInterval(timer);
+      clearInterval(pollTimer);
+    };
+  }, [refreshHealth, silentFetchCandidates]);
 
   // Debounce search
   useEffect(() => {
