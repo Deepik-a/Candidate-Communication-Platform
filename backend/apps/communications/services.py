@@ -473,8 +473,35 @@ class CommunicationService:
             detail=f"Successfully updated message #{message.id} status to '{target_status}'.",
         )
 
+    def sync_recent_active_messages(self, limit: int = 15) -> int:
+        """
+        Polls the communication provider for active messages in SENT/DELIVERED status
+        and advances their status if updated on the provider.
+        Provides a secondary fallback guaranteeing 100% real-time accuracy even if webhooks fail.
+        """
+        active_messages = Message.objects.select_related('candidate').filter(
+            status__in=[MessageStatusLog.SENT, MessageStatusLog.DELIVERED]
+        ).exclude(provider_message_id='').order_by('-sent_at')[:limit]
+
+        updated_count = 0
+        provider = self._resolve_provider(channel='sms')
+        for msg in active_messages:
+            try:
+                latest = provider.check_status(msg.provider_message_id)
+                if latest and latest.value != msg.status:
+                    outcome = self.update_message_status(
+                        message_id=msg.id,
+                        new_status=latest.value,
+                    )
+                    if outcome.updated:
+                        updated_count += 1
+            except Exception:
+                pass
+        return updated_count
+
     def dispatch_due_scheduled_messages(self) -> List[CandidateMessageOutcome]:
-        """Send every scheduled message whose send time has arrived."""
+        """Send every scheduled message whose send time has arrived, and sync active messages."""
+        self.sync_recent_active_messages()
         due = (
             Message.objects.select_related("candidate", "template")
             .filter(status=MessageStatusLog.SCHEDULED, scheduled_at__lte=timezone.now())

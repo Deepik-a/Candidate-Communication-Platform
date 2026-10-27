@@ -107,9 +107,11 @@ export default function CandidateDashboard() {
     }
   }, []);
 
-  // Real-time status sync: silently polls candidate statuses (Sent -> Delivered -> Read) every 5s without UI flicker
+  // Real-time status sync: silently polls candidate statuses (Sent -> Delivered -> Read) every 2.5s without UI flicker
   const silentFetchCandidates = useCallback(async () => {
     try {
+      // Trigger background status sync & scheduled dispatch
+      communicationsApi.dispatchScheduled().catch(() => {});
       const data = await candidatesApi.list({
         search: search || undefined,
         page: page + 1,
@@ -124,11 +126,21 @@ export default function CandidateDashboard() {
 
   useEffect(() => {
     refreshHealth();
-    const timer = setInterval(refreshHealth, 15000);
-    const pollTimer = setInterval(silentFetchCandidates, 5000);
+    const healthTimer = setInterval(refreshHealth, 12000);
+    const pollTimer = setInterval(silentFetchCandidates, 2500);
+
+    const handleFocus = () => {
+      silentFetchCandidates();
+      refreshHealth();
+    };
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleFocus);
+
     return () => {
-      clearInterval(timer);
+      clearInterval(healthTimer);
       clearInterval(pollTimer);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
     };
   }, [refreshHealth, silentFetchCandidates]);
 

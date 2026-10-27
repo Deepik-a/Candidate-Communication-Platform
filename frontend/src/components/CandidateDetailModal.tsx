@@ -215,12 +215,23 @@ export function CandidateDetailModal({
     }
   }, [candidate]);
 
-  // Initial load + real-time polling every 4 seconds while drawer is open
+  // Initial load + real-time polling every 2.5 seconds while drawer is open
   useEffect(() => {
     if (open && candidate) {
       fetchHistory();
-      const interval = setInterval(silentRefresh, 4000);
-      return () => clearInterval(interval);
+      const interval = setInterval(silentRefresh, 2500);
+
+      const handleFocus = () => {
+        silentRefresh();
+      };
+      window.addEventListener('focus', handleFocus);
+      document.addEventListener('visibilitychange', handleFocus);
+
+      return () => {
+        clearInterval(interval);
+        window.removeEventListener('focus', handleFocus);
+        document.removeEventListener('visibilitychange', handleFocus);
+      };
     } else {
       setMessages([]);
     }
