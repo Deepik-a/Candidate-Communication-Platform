@@ -25,13 +25,21 @@ MESSAGES_DB = {}
 
 import os
 
+def resolve_default_webhook_url():
+    url = os.environ.get("WEBHOOK_URL") or os.environ.get("BACKEND_WEBHOOK_URL")
+    if not url:
+        backend_host = os.environ.get("BACKEND_URL")
+        if backend_host:
+            url = backend_host.rstrip("/") + "/api/v1/communications/webhook/"
+    return url or "http://localhost:8000/api/v1/communications/webhook/"
+
 # Simulation configuration
 SIM_CONFIG = {
     "mode": "normal",  # 'normal' | 'always_fail' | 'temporary_failure' | 'rate_limit' | 'delivery_failure'
     "temporary_failure_count": 0,
     "temporary_failure_threshold": 2,
     "rate_limit_active": False,
-    "webhook_url": os.environ.get("WEBHOOK_URL", os.environ.get("BACKEND_WEBHOOK_URL", "http://localhost:8000/api/v1/communications/webhook/")),
+    "webhook_url": resolve_default_webhook_url(),
 }
 
 WEBHOOK_LOGS = []
@@ -49,17 +57,29 @@ def dispatch_webhook_to_backend(payload: dict) -> dict:
     )
     result = {}
     try:
-        with urllib.request.urlopen(req, timeout=3) as response:
+        with urllib.request.urlopen(req, timeout=5) as response:
             resp_body = response.read().decode("utf-8")
-            result = {"success": True, "code": response.status, "body": json.loads(resp_body)}
+            try:
+                body_json = json.loads(resp_body)
+            except Exception:
+                body_json = {"raw": resp_body}
+
+            backend_success = body_json.get("success") if isinstance(body_json, dict) else True
+            result = {
+                "success": (response.status == 200 and backend_success is not False),
+                "code": response.status,
+                "body": body_json,
+                "error": body_json.get("detail") if (isinstance(body_json, dict) and backend_success is False) else None
+            }
     except urllib.error.HTTPError as he:
-        result = {"success": False, "code": he.code, "error": str(he)}
+        result = {"success": False, "code": he.code, "error": f"HTTP {he.code}: {he.reason}"}
     except Exception as ex:
-        result = {"success": False, "error": str(ex)}
+        result = {"success": False, "error": f"Connection failed to {url}: {str(ex)}"}
 
     log_entry = {
         "timestamp": time.strftime("%H:%M:%S"),
         "payload": payload,
+        "target_url": url,
         "result": result,
     }
     WEBHOOK_LOGS.insert(0, log_entry)
@@ -152,6 +172,20 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Backend Webhook Configuration Card -->
+    <div class="card" style="border: 1px solid #bae6fd; background: #f0f9ff;">
+      <div class="card-header" style="border-bottom: 1px solid #e0f2fe; margin-bottom: 8px;">
+        <div class="card-title" style="color: #0369a1; font-size: 0.95rem;">🔗 Backend Webhook Target URL</div>
+      </div>
+      <p style="font-size: 0.8125rem; color: #475569; margin-bottom: 10px;">
+        Webhooks from this simulator update the candidate portal in real-time. If hosted on Render, enter your live backend webhook URL (e.g. <code>https://candidate-comm-backend.onrender.com/api/v1/communications/webhook/</code>):
+      </p>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <input type="text" id="target-webhook-url" placeholder="http://localhost:8000/api/v1/communications/webhook/" style="flex: 1; min-width: 280px; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.8125rem; background: #ffffff;">
+        <button class="btn btn-primary" onclick="saveWebhookUrl()">Save Target URL</button>
+      </div>
+    </div>
+
     <!-- Incoming Messages Card -->
     <div class="card">
       <div class="card-header">
@@ -182,7 +216,7 @@ HTML_PAGE = """<!DOCTYPE html>
         Quickly send a webhook event to the platform for any candidate or message ID to advance its status to <strong>READ</strong>:
       </p>
       <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-        <input type="text" id="manual-ref" placeholder="Message Reference ID (e.g. sent_12345 or MSG-1)" style="flex: 1; min-width: 200px; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.8125rem;">
+        <input type="text" id="manual-ref" placeholder="Message Reference ID (e.g. sent_12345) or Candidate ID (e.g. 5W66W5)" style="flex: 1; min-width: 200px; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.8125rem;">
         <button class="btn btn-primary" onclick="triggerManualWebhook('read')">Mark Candidate as READ (✓ read)</button>
         <button class="btn btn-outline" onclick="triggerManualWebhook('delivered')">Mark as DELIVERED</button>
       </div>
@@ -217,10 +251,34 @@ HTML_PAGE = """<!DOCTYPE html>
         const res = await fetch('/api/messages');
         const data = await res.json();
         document.getElementById('msg-count').textContent = data.count || 0;
+        const targetInput = document.getElementById('target-webhook-url');
+        if (data.webhook_url && targetInput && !targetInput.value) {
+          targetInput.value = data.webhook_url;
+        }
         renderMessages(data.messages || []);
         renderLogs(data.logs || []);
       } catch (e) {
         console.error('Failed to fetch messages', e);
+      }
+    }
+
+    async function saveWebhookUrl() {
+      const url = document.getElementById('target-webhook-url').value.trim();
+      if (!url) {
+        alert('Please enter a valid webhook URL.');
+        return;
+      }
+      try {
+        const res = await fetch('/api/config/webhook-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ webhook_url: url })
+        });
+        const data = await res.json();
+        showToast('Webhook target updated: ' + data.webhook_url);
+        fetchMessages();
+      } catch (e) {
+        alert('Failed to update URL: ' + e);
       }
     }
 
@@ -230,7 +288,7 @@ HTML_PAGE = """<!DOCTYPE html>
         container.innerHTML = `
           <div class="empty-state">
             <h3>No messages received yet</h3>
-            <p>Send a message from the Candidate Communication Platform (e.g. to Krishna Khandelwal), and it will appear here in real-time!</p>
+            <p>Send a message from the Candidate Communication Platform dashboard (e.g. to Krishna Khandelwal), and it will appear here in real-time!</p>
           </div>
         `;
         return;
@@ -284,12 +342,13 @@ HTML_PAGE = """<!DOCTYPE html>
       if (!logs || logs.length === 0) return;
       container.innerHTML = logs.map(l => {
         const isOk = l.result && l.result.success;
+        const errDetail = l.result && l.result.error ? ` (${l.result.error})` : '';
         return `
           <div class="log-entry">
             <span style="color: #64748b;">[${l.timestamp}]</span>
             <span style="color: #38bdf8;">WEBHOOK POST</span> ->
             <code>${JSON.stringify(l.payload)}</code>
-            <span class="${isOk ? 'log-success' : 'log-error'}">${isOk ? '✓ HTTP 200 OK' : '✕ FAIL'}</span>
+            <span class="${isOk ? 'log-success' : 'log-error'}">${isOk ? '✓ HTTP 200 OK' : '✕ FAIL' + errDetail}</span>
           </div>
         `;
       }).join('');
@@ -419,7 +478,8 @@ class DummyCommunicationHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "count": len(MESSAGES_DB),
                 "messages": msg_list,
-                "logs": WEBHOOK_LOGS[:10],
+                "logs": WEBHOOK_LOGS[:15],
+                "webhook_url": SIM_CONFIG.get("webhook_url"),
             })
             return
 
@@ -642,6 +702,16 @@ class DummyCommunicationHandler(BaseHTTPRequestHandler):
             first = dispatch_webhook_to_backend(payload_wh)
             second = dispatch_webhook_to_backend(payload_wh)
             self._send_json(200, {"success": True, "first": first, "second": second})
+            return
+
+        # 6. Update Webhook URL configuration
+        if parsed.path == "/api/config/webhook-url":
+            new_url = payload.get("webhook_url", "").strip()
+            if new_url:
+                SIM_CONFIG["webhook_url"] = new_url
+                self._send_json(200, {"success": True, "webhook_url": new_url})
+                return
+            self._send_json(400, {"error": "Missing webhook_url in request payload"})
             return
 
         self._send_json(404, {"error": "Not found"})

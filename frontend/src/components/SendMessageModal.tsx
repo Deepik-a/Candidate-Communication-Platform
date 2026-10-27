@@ -15,11 +15,14 @@ import {
   MenuItem,
   TextField,
   Divider,
+  Chip,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import ScheduleSendIcon from '@mui/icons-material/ScheduleSend';
+import LockIcon from '@mui/icons-material/Lock';
+import AddIcon from '@mui/icons-material/Add';
 
 import { communicationsApi } from '@/lib/api';
 import { useToast } from '@/context/ToastContext';
@@ -123,6 +126,23 @@ export function SendMessageModal({
       setContent(selected.content);
     }
   };
+
+  const insertFixedField = (token: string) => {
+    if (content.includes(token)) {
+      showToast(`${token} is already included in this message.`, 'info');
+      return;
+    }
+    setContent((prev) => (prev ? `${prev} ${token}` : token));
+    if (contentError) setContentError('');
+  };
+
+  const FIXED_FIELDS_OPTIONS = [
+    { key: '{{full_name}}', label: 'Candidate Full Name' },
+    { key: '{{mobile_number}}', label: 'Mobile Number' },
+    { key: '{{email}}', label: 'Email' },
+    { key: '{{candidate_id}}', label: 'Candidate ID' },
+  ];
+
 
   const handleSend = async () => {
     if (!content.trim() && !templateId) {
@@ -354,24 +374,55 @@ export function SendMessageModal({
             </Select>
           </FormControl>
 
+          {/* Fixed Fields Selector Bar */}
+          <Box sx={{ p: 1.5, backgroundColor: '#f8fafc', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+              <Typography sx={{ fontSize: '0.73rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <LockIcon sx={{ fontSize: 13, color: '#0284c7' }} /> Fixed Candidate Fields:
+              </Typography>
+              <Typography sx={{ fontSize: '0.68rem', color: '#64748b' }}>
+                Click to include fixed field in template
+              </Typography>
+            </Box>
+            <Stack direction="row" spacing={0.75} sx={{ flexWrap: 'wrap', gap: 0.75 }}>
+              {FIXED_FIELDS_OPTIONS.map((f) => {
+                const isIncluded = content.includes(f.key);
+                return (
+                  <Chip
+                    key={f.key}
+                    icon={isIncluded ? <LockIcon sx={{ fontSize: '12px !important' }} /> : <AddIcon sx={{ fontSize: '13px !important' }} />}
+                    label={f.label}
+                    size="small"
+                    clickable
+                    onClick={() => insertFixedField(f.key)}
+                    variant={isIncluded ? 'filled' : 'outlined'}
+                    color={isIncluded ? 'primary' : 'default'}
+                    sx={{ fontSize: '0.72rem', fontWeight: 600, height: 24 }}
+                  />
+                );
+              })}
+            </Stack>
+          </Box>
+
           {/* Message textarea */}
           <Box>
-            <Typography sx={{ fontWeight: 600, fontSize: '0.875rem', color: '#1f2937' }}>
-              Message{' '}
-              <Box component="span" sx={{ color: '#d32f2f' }}>
-                *
-              </Box>
-            </Typography>
-            <Typography sx={{ fontSize: '0.78rem', color: '#6b7280', mt: 0.5, mb: 1.5 }}>
-              Type a message or pick a template. Fields like {'{{full_name}}'} are filled in at
-              send time.
-            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+              <Typography sx={{ fontWeight: 600, fontSize: '0.875rem', color: '#1f2937' }}>
+                Message Text{' '}
+                <Box component="span" sx={{ color: '#d32f2f' }}>
+                  *
+                </Box>
+              </Typography>
+              <Typography sx={{ fontSize: '0.72rem', color: '#64748b' }}>
+                Recruiters can edit text freely; fixed fields remain locked.
+              </Typography>
+            </Box>
 
             <Box
               component="textarea"
               id="message-send-textarea"
-              rows={7}
-              placeholder="Type or paste here..."
+              rows={6}
+              placeholder="Type message text here or pick a template..."
               value={content}
               onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => {
                 setContent(e.target.value);
@@ -380,7 +431,7 @@ export function SendMessageModal({
               disabled={loading}
               sx={{
                 width: '100%',
-                minHeight: 140,
+                minHeight: 130,
                 border: contentError ? '1px solid #d32f2f' : '1px solid #cfd8dc',
                 borderRadius: '4px',
                 p: 1.5,
@@ -415,9 +466,16 @@ export function SendMessageModal({
                 p: 1.5,
               }}
             >
-              <Typography sx={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', mb: 0.5, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                Preview for {recipientList[0].full_name}
-              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+                <Typography sx={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Preview with Candidate Fixed Fields Injected
+                </Typography>
+                <Chip
+                  label={recipientList[0].full_name}
+                  size="small"
+                  sx={{ fontSize: '0.68rem', height: 18, backgroundColor: '#e0f2fe', color: '#0284c7', fontWeight: 600 }}
+                />
+              </Box>
               <Divider sx={{ mb: 1 }} />
               <Typography sx={{ fontSize: '0.8125rem', color: '#1f2937', whiteSpace: 'pre-wrap' }}>
                 {preview}

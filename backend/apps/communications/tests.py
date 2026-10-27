@@ -196,6 +196,29 @@ class CandidateCommunicationTests(TestCase):
         self.assertTrue(resp2.data["success"])
         self.assertTrue(resp2.data["was_duplicate"])
 
+    def test_webhook_resolves_candidate_code_successfully(self):
+        """Webhooks passing candidate code (e.g. 5W66W5) resolve to the candidate's message."""
+        msg = Message.objects.create(
+            candidate=self.c1,
+            channel="sms",
+            content="Hello Rahul",
+            status="sent",
+            provider="dummy-service",
+            provider_message_id="sent_abc123",
+        )
+        # Use candidate's candidate_id (e.g. CAN-001 or 5W66W5)
+        resp = self.client.post(
+            "/api/v1/communications/webhook/",
+            data={"reference_id": self.c1.candidate_id, "status": "delivered"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data["success"])
+        msg.refresh_from_db()
+        self.assertEqual(msg.status, MessageStatusLog.DELIVERED)
+        self.c1.refresh_from_db()
+        self.assertEqual(self.c1.status, MessageStatus.DELIVERED)
+
     # ── Requirement #8: Handling Communication Failures ─────────────────────────
 
     def test_failure_translation_invalid_recipient(self):

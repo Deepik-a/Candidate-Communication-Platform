@@ -351,9 +351,30 @@ class CommunicationService:
                 pass
 
         if not message and provider_message_id:
+            # 1. Direct provider message ID (e.g., sent_xxxx)
             message = Message.objects.select_related('candidate').filter(
                 provider_message_id=provider_message_id
             ).first()
+
+            # 2. Candidate ID code fallback (e.g. 5W66W5 or CAN-001) -> resolve latest message
+            if not message:
+                message = Message.objects.select_related('candidate').filter(
+                    candidate__candidate_id__iexact=provider_message_id
+                ).order_by('-sent_at', '-id').first()
+
+            # 3. Numeric candidate database ID or message ID
+            if not message and provider_message_id.isdigit():
+                message = Message.objects.select_related('candidate').filter(
+                    candidate_id=int(provider_message_id)
+                ).order_by('-sent_at', '-id').first() or Message.objects.select_related('candidate').filter(
+                    id=int(provider_message_id)
+                ).first()
+
+            # 4. Candidate full name fallback (case-insensitive) -> resolve latest message
+            if not message:
+                message = Message.objects.select_related('candidate').filter(
+                    candidate__full_name__iexact=provider_message_id
+                ).order_by('-sent_at', '-id').first()
 
         if not message:
             return StatusUpdateOutcome(
@@ -361,7 +382,7 @@ class CommunicationService:
                 status=new_status,
                 updated=False,
                 was_duplicate=False,
-                detail=f"Message not found (ID: {message_id}, Provider ID: {provider_message_id}).",
+                detail=f"Message not found (ID: {message_id}, Provider ID / Candidate ID: {provider_message_id}).",
             )
 
         norm_status = (new_status or "").strip().lower()
