@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef, useEffect, ReactNode } from 'react';
 import { Snackbar, Box, Typography } from '@mui/material';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
@@ -15,7 +15,7 @@ interface ToastMessage {
 }
 
 interface ToastContextValue {
-  showToast: (message: string, severity?: ToastSeverity) => void;
+  showToast: (message: string, severity?: ToastSeverity, duration?: number) => void;
   toast: ToastMessage | null;
   open: boolean;
   closeToast: () => void;
@@ -36,13 +36,38 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [open, setOpen] = useState(false);
   const [inlineHandled, setInlineHandled] = useState(false);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const showToast = useCallback((message: string, severity: ToastSeverity = 'success') => {
-    setToast({ message, severity });
-    setOpen(true);
+  const handleClose = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setOpen(false);
   }, []);
 
-  const handleClose = useCallback(() => setOpen(false), []);
+  const showToast = useCallback((message: string, severity: ToastSeverity = 'success', duration: number = 4000) => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setToast({ message, severity });
+    setOpen(true);
+
+    if (duration > 0) {
+      timerRef.current = setTimeout(() => {
+        setOpen(false);
+      }, duration);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    };
+  }, []);
 
   const severity: ToastSeverity = toast?.severity || 'success';
 

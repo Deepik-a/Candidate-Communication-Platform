@@ -47,7 +47,7 @@ import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import { communicationsApi } from '@/lib/api';
 import { useToast } from '@/context/ToastContext';
 import { Candidate, MessageChannel, CandidateMessageOutcome, MessageTemplate } from '@/types';
-import { StatusBadge } from './StatusBadge';
+import { StatusBadge } from '@/components/common/StatusBadge';
 
 interface BulkMessageModalProps {
   open: boolean;

@@ -15,7 +15,7 @@ import {
 } from '@mui/material';
 import FilterListIcon from '@mui/icons-material/FilterList';
 import { Candidate } from '@/types';
-import { StatusBadge } from './StatusBadge';
+import { StatusBadge } from '@/components/common/StatusBadge';
 import { EmptyCandidatesIllustration } from './EmptyCandidatesIllustration';
 
 type SortField = 'full_name' | 'mobile_number' | 'last_message_date' | 'status' | 'candidate_id';

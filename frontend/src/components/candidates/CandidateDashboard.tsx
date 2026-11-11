@@ -11,6 +11,7 @@ import {
   TextField,
   Typography,
   Alert,
+  Fade,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
@@ -22,14 +23,14 @@ import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import { candidatesApi, communicationsApi } from '@/lib/api';
 import { Candidate, CommunicationHealth } from '@/types';
 import { useToast } from '@/context/ToastContext';
-import { CandidateTable } from '@/components/CandidateTable';
-import { AddCandidateModal } from '@/components/AddCandidateModal';
-import { SendMessageModal } from '@/components/SendMessageModal';
-import { BulkMessageModal } from '@/components/BulkMessageModal';
-import { CandidateDetailModal } from '@/components/CandidateDetailModal';
-import { DeleteConfirmDialog } from '@/components/DeleteConfirmDialog';
-import { ServiceHealthBar } from '@/components/ServiceHealthBar';
-import { TemplatesDrawer } from '@/components/TemplatesDrawer';
+import { CandidateTable } from './CandidateTable';
+import { AddCandidateModal } from './AddCandidateModal';
+import { SendMessageModal } from '@/components/communications/SendMessageModal';
+import { BulkMessageModal } from '@/components/communications/BulkMessageModal';
+import { CandidateDetailModal } from './CandidateDetailModal';
+import { DeleteConfirmDialog } from './DeleteConfirmDialog';
+import { ServiceHealthBar } from '@/components/communications/ServiceHealthBar';
+import { TemplatesDrawer } from '@/components/communications/TemplatesDrawer';
 
 type SortField = 'full_name' | 'mobile_number' | 'last_message_date' | 'status' | 'candidate_id';
 type SortOrder = 'asc' | 'desc';
@@ -523,7 +524,7 @@ export default function CandidateDashboard() {
           />
 
           {/* Toast Message at bottom rightmost on the same line matching Screenshot 2 */}
-          {toastOpen && toast && (
+          <Fade in={toastOpen && Boolean(toast)} unmountOnExit timeout={300}>
             <Box
               id="dashboard-inline-toast"
               onClick={closeToast}
@@ -535,14 +536,14 @@ export default function CandidateDashboard() {
                 py: 0.85,
                 borderRadius: '4px',
                 cursor: 'pointer',
-                backgroundColor: toast.severity === 'error' ? '#ffebee' : '#e8f5e9',
-                border: toast.severity === 'error' ? '1px solid #ffcdd2' : '1px solid #c8e6c9',
-                color: toast.severity === 'error' ? '#b71c1c' : '#1e293b',
+                backgroundColor: toast?.severity === 'error' ? '#ffebee' : '#e8f5e9',
+                border: toast?.severity === 'error' ? '1px solid #ffcdd2' : '1px solid #c8e6c9',
+                color: toast?.severity === 'error' ? '#b71c1c' : '#1e293b',
                 boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
                 transition: 'all 0.2s ease',
               }}
             >
-              {toast.severity === 'error' ? (
+              {toast?.severity === 'error' ? (
                 <ErrorOutlineIcon sx={{ color: '#d32f2f', fontSize: 18 }} />
               ) : (
                 <CheckCircleOutlineIcon sx={{ color: '#2e7d32', fontSize: 18 }} />
@@ -551,14 +552,14 @@ export default function CandidateDashboard() {
                 sx={{
                   fontSize: '0.8125rem',
                   fontWeight: 500,
-                  color: toast.severity === 'error' ? '#b71c1c' : '#1e293b',
+                  color: toast?.severity === 'error' ? '#b71c1c' : '#1e293b',
                   lineHeight: 1.4,
                 }}
               >
-                {toast.message}
+                {toast?.message}
               </Typography>
             </Box>
-          )}
+          </Fade>
         </Box>
       </Paper>
 

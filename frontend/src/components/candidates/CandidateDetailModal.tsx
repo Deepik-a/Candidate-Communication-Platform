@@ -18,7 +18,7 @@ import { useToast } from '@/context/ToastContext';
 
 import { Candidate, Message } from '@/types';
 import { communicationsApi } from '@/lib/api';
-import { EmptyHistoryIllustration } from './EmptyHistoryIllustration';
+import { EmptyHistoryIllustration } from '@/components/communications/EmptyHistoryIllustration';
 
 interface CandidateDetailModalProps {
   open: boolean;
