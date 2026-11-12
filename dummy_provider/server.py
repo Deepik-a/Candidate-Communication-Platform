@@ -82,7 +82,11 @@ WEBHOOK_LOGS = []
 # ── Webhook Dispatcher ────────────────────────────────────────────────────────
 def dispatch_webhook_to_backend(payload: dict) -> dict:
     """Dispatches a status update webhook directly to the backend platform."""
-    url = SIM_CONFIG.get("webhook_url", "http://localhost:8000/api/v1/communications/webhook/")
+    raw_url = SIM_CONFIG.get("webhook_url") or resolve_default_webhook_url()
+    url = raw_url.strip()
+    if not url.endswith("/"):
+        url += "/"
+    SIM_CONFIG["webhook_url"] = url
     data_bytes = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -956,10 +960,12 @@ HTML_PAGE = """<!DOCTYPE html>
       container.innerHTML = logs.map(l => {
         const isOk = l.result && l.result.success;
         const errDetail = l.result && l.result.error ? ` (${l.result.error})` : '';
+        const targetUrl = l.target_url ? `<span style="color: #94a3b8; font-size: 0.7rem; margin-right: 6px;">[Target: ${l.target_url}]</span>` : '';
         return `
           <div class="log-entry">
             <span style="color: #64748b;">[${l.timestamp}]</span>
             <span style="color: #38bdf8;">WEBHOOK POST</span> ->
+            ${targetUrl}
             <code>${JSON.stringify(l.payload)}</code>
             <span class="${isOk ? 'log-success' : 'log-error'}">${isOk ? '✓ HTTP 200 OK' : '✕ FAIL' + errDetail}</span>
           </div>
@@ -1380,6 +1386,8 @@ class DummyCommunicationHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/config/webhook-url":
             new_url = payload.get("webhook_url", "").strip()
             if new_url:
+                if not new_url.endswith("/"):
+                    new_url += "/"
                 SIM_CONFIG["webhook_url"] = new_url
                 self._send_json(200, {"success": True, "webhook_url": new_url})
                 return

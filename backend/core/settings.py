@@ -12,7 +12,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-dev-key-change-in-production-12345')
 DEBUG = config('DEBUG', default=True, cast=bool)
 _allowed_hosts_env = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=lambda v: [s.strip() for s in v.split(',')])
-ALLOWED_HOSTS = list(set(_allowed_hosts_env + ['.onrender.com', 'localhost', '127.0.0.1']))
+ALLOWED_HOSTS = list(set(_allowed_hosts_env + ['.onrender.com', 'localhost', '127.0.0.1', 'testserver']))
 
 INSTALLED_APPS = [
     'django.contrib.admin',
